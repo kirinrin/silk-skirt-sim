@@ -11,6 +11,7 @@ import { StockingLeg, createStockingMaterial, denierToDensity, STYLES } from './
 import { Skirt } from './skirt.js';
 import { makePlaid, PLAIDS } from './textures.js';
 import { createSkinMaterial, createKnitMaterial } from './materials.js';
+import { makeToon, makeToonStocking, OutlinePass } from './toon.js';
 import { BODY } from './bodydata.js';
 const ANKLE_P = BODY.ankle;
 
@@ -24,7 +25,7 @@ const P = {
   denier: 20, gloss: 0.4, shine: 0.6, seam: false, reinforce: true, tension: 0.7,
   plaid: '棕色格纹', length: 0.42, pleats: 28,
   wind: 0, windDir: 90, updraft: 0, weight: 0.6, air: 0.25,
-  skin: '#eec0a8', shoes: true, idle: true, paused: false,
+  skin: '#eec0a8', shoes: true, idle: true, paused: false, look: '动画',
 };
 
 // ------------------------------------------------------------------ 渲染器 / 场景
@@ -58,7 +59,7 @@ const fill = new THREE.DirectionalLight(0xffe0d0, 0.5); fill.position.set(-2.2, 
 scene.add(new THREE.HemisphereLight(0x8890a8, 0x1a1512, 0.35));
 
 const ground = new THREE.Mesh(new THREE.CircleGeometry(3, 64), new THREE.ShadowMaterial({ opacity: 0.45 }));
-ground.rotation.x = -Math.PI / 2; ground.receiveShadow = true; scene.add(ground);
+ground.rotation.x = -Math.PI / 2; ground.receiveShadow = true; ground.material.depthWrite = false; scene.add(ground);
 
 // ------------------------------------------------------------------ 身体
 const root = { x: 0, y: 0.97, z: 0, yaw: 0 };
@@ -117,11 +118,24 @@ function applyStocking() {
   u.uShine.value = P.shine; u.uSeam.value = P.seam ? 1 : 0; u.uReinf.value = P.reinforce ? 1 : 0;
   u.uFiber.value.copy(col).lerp(new THREE.Color(0xffffff), 0.7);
   u.uTop.value = st.top; u.uBand.value = st.band;
+  if (typeof toon !== 'undefined') {
+    const l = col.r * 0.3 + col.g * 0.5 + col.b * 0.2;
+    toon.stock.color.copy(col);
+    toon.stock.userData.uniforms.uShade.value.setRGB(0.55, 0.55, 0.66).lerp(new THREE.Color(0.84, 0.84, 0.95), Math.min(1, l * 1.6));
+  }
   for (const s of stockings) { s.mesh.visible = P.stockOn; s.tension = P.tension; }
 }
 
 // ------------------------------------------------------------------ 鞋
 const SHOE_J0 = rowOfS(0.80), SHOE_ROWS = NV - SHOE_J0;
+const SHOE_MASK = `      {
+        float q = vSUV.z - 0.82;
+        float sn = normalize(vSUV.xy).y;
+        float line = mix(-0.34, 0.22, 1. - smoothstep(0.03, 0.085, q));
+        line = mix(line, 1.6, smoothstep(0.150, 0.192, q));
+        line -= (1. - smoothstep(0.004, 0.016, q)) * 3.;
+        if (sn > line) discard;
+      }`;
 const shoeMat = new THREE.MeshPhysicalMaterial({ color: 0x0b0b0d, roughness: 0.22, clearcoat: 1, clearcoatRoughness: 0.12, side: THREE.DoubleSide });
 shoeMat.onBeforeCompile = (sh) => {
   sh.vertexShader = sh.vertexShader
@@ -130,14 +144,7 @@ shoeMat.onBeforeCompile = (sh) => {
   sh.fragmentShader = sh.fragmentShader
     .replace('#include <common>', '#include <common>\nvarying vec3 vSUV;')
     .replace('#include <color_fragment>', `#include <color_fragment>
-      {
-        float q = vSUV.z - 0.82;
-        float sn = normalize(vSUV.xy).y;
-        float line = mix(-0.34, 0.22, 1. - smoothstep(0.03, 0.085, q));
-        line = mix(line, 1.6, smoothstep(0.150, 0.192, q));
-        line -= (1. - smoothstep(0.004, 0.016, q)) * 3.;
-        if (sn > line) discard;
-      }`);
+${SHOE_MASK}`);
 };
 const TOE_J0 = rowOfS(0.93) - SHOE_J0, shoeTmp = new Float32Array(NU * SHOE_ROWS * 3);
 const heelGeo = new THREE.CylinderGeometry(0.0105, 0.0042, 1, 16);
@@ -250,6 +257,7 @@ function applyPlaid() {
   skirtMat.map = map; skirtMat.bumpMap = bump; skirtMat.needsUpdate = true;
   bandMat.color.set(PLAIDS[P.plaid].dark);
   skirtMat.sheenColor.set(PLAIDS[P.plaid].base).lerp(new THREE.Color(0xffffff), 0.5);
+  if (typeof toon !== 'undefined') { toon.skirt.map = map; toon.skirt.needsUpdate = true; toon.band.color.set(PLAIDS[P.plaid].dark); }
 }
 
 // ------------------------------------------------------------------ 姿态与动作
@@ -378,8 +386,40 @@ function endDrag() {
 canvas.addEventListener('pointerup', endDrag);
 canvas.addEventListener('pointercancel', endDrag);
 
+// ------------------------------------------------------------------ 渲染风格（写实 / 动画）
+const toon = {
+  skin: makeToon({ color: P.skin, vertexColors: true, shade: [0.95, 0.70, 0.66], rim: [0.10, 0.07, 0.06], streak: 0.55, specPow: 9 }),
+  skirt: makeToon({ side: THREE.DoubleSide, shade: [0.70, 0.66, 0.82] }),
+  top: makeToon({ color: 0xf6f1e8, shade: [0.80, 0.80, 0.93] }),
+  band: makeToon({ color: 0x5b4336, shade: [0.62, 0.58, 0.70] }),
+  shorts: makeToon({ color: 0x1b1b22, shade: [0.6, 0.6, 0.75] }),
+  shoe: makeToon({ color: 0x1a1a20, side: THREE.DoubleSide, shade: [0.55, 0.55, 0.7], rim: [0.22, 0.22, 0.26], mask: SHOE_MASK }),
+  heel: makeToon({ color: 0x1a1a20, shade: [0.55, 0.55, 0.7], rim: [0.22, 0.22, 0.26] }),
+  stock: makeToonStocking(stockMat.userData.uniforms),
+};
+toon.skin.polygonOffset = true; toon.skin.polygonOffsetFactor = 1; toon.skin.polygonOffsetUnits = 1;
+const outline = new OutlinePass(renderer);
+const looks = [
+  ...skinMeshes.map((m) => [m, skinMat, toon.skin]),
+  ...stockings.map((s) => [s.mesh, stockMat, toon.stock]),
+  ...shoes.flatMap((sh) => [[sh.mesh, shoeMat, toon.shoe], [sh.heel, sh.heel.material, toon.heel]]),
+  ...shortLegs.map((sh) => [sh.mesh, shortsMat, toon.shorts]),
+  ...bodyGroup.children.map((m) => [m, m.material, m.material === topMat ? toon.top : m.material === bandMat ? toon.band : toon.shorts]),
+  [skirt.mesh, skirtMat, toon.skirt],
+];
+function applyLook() {
+  const t = P.look === '动画';
+  for (const [mesh, real, tn] of looks) mesh.material = t ? tn : real;
+  scene.background.set(t ? 0xeef0f6 : 0x15161b);
+  renderer.toneMapping = t ? THREE.NoToneMapping : THREE.ACESFilmicToneMapping;
+  ground.material.opacity = t ? 0.16 : 0.45;
+  ground.material.color.set(t ? 0x5a5f8a : 0x000000);
+  document.body.classList.toggle('toon', t);
+}
+
 // ------------------------------------------------------------------ 面板
 const gui = new GUI({ title: '参数' });
+gui.add(P, 'look', ['动画', '写实']).name('渲染风格').onChange(applyLook);
 const fS = gui.addFolder('丝袜');
 fS.add(P, 'stockOn').name('穿着丝袜').onChange(applyStocking);
 fS.add(P, 'style', Object.keys(STYLES)).name('款式').onChange(applyStocking);
@@ -409,7 +449,7 @@ fA.add({ f: () => { if (!act.jump) act.jump = { t: 0 }; } }, 'f').name('跳一�
 fA.add(P, 'idle').name('待机屈膝');
 fA.add({ f: () => { act.spin = act.sway = act.jump = null; yawBase = 0; updatePose(0); skirt.reset(root); } }, 'f').name('复位');
 const fB = gui.addFolder('身体');
-fB.addColor(P, 'skin').name('肤色').onChange((v) => skinMat.color.set(v));
+fB.addColor(P, 'skin').name('肤色').onChange((v) => { skinMat.color.set(v); toon.skin.color.set(v); });
 fB.add(P, 'shoes').name('高跟鞋');
 fB.close();
 
@@ -419,6 +459,7 @@ function rebuildSkirt() { skirt.build({ pleats: P.pleats, length: P.length }, ro
 function resize() {
   const w = window.innerWidth, h = window.innerHeight;
   renderer.setSize(w, h, false);
+  outline.setSize(w, h, renderer.getPixelRatio());
   camera.aspect = w / h; camera.updateProjectionMatrix();
 }
 window.addEventListener('resize', resize); resize();
@@ -432,7 +473,7 @@ function simulate(dt) {
   updateShorts();
 }
 
-applyStocking(); applyPlaid();
+applyStocking(); applyPlaid(); applyLook();
 updatePose(0); rebuildSkirt();
 for (let i = 0; i < 90; i++) { const idle = P.idle; P.idle = false; simulate(1 / 60); P.idle = idle; } // 让裙子先垂好
 time = 0;
@@ -447,11 +488,11 @@ function frame(now) {
     while (acc >= 1 / 60) { simulate(1 / 60); acc -= 1 / 60; }
   }
   controls.update();
-  renderer.render(scene, camera);
+  if (P.look === '动画') outline.render(scene, camera); else renderer.render(scene, camera);
   frames++; fpsT += real;
   if (fpsT > 0.5) { fpsEl.textContent = `${Math.round(frames / fpsT)} fps`; frames = 0; fpsT = 0; }
 }
 requestAnimationFrame(frame);
 
 // 调试 / 自动化入口
-window.__app = { P, scene, camera, controls, skirt, stockings, legs, root, act, simulate, applyStocking, applyPlaid, rebuildSkirt, renderer, gui };
+window.__app = { applyLook, toon, P, scene, camera, controls, skirt, stockings, legs, root, act, simulate, applyStocking, applyPlaid, rebuildSkirt, renderer, gui };
