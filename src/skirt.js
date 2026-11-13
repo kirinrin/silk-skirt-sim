@@ -9,6 +9,7 @@ const K = 8;            // 每个褶的渲染采样数
 const E = 0.07;
 const GAP = 0.0016;     // 被遮住的布层向内错开，避免闪烁
 const MAX_PULL = 0.5;
+const AO_K = [0.45, 0.62, 0.93, 1, 1, 0.7, 0.45, 0.45];
 
 export class Skirt {
   constructor(material) {
@@ -107,6 +108,8 @@ export class Skirt {
     g.setAttribute('position', new THREE.BufferAttribute(this.rpos, 3).setUsage(THREE.DynamicDrawUsage));
     g.setAttribute('normal', new THREE.BufferAttribute(this.rnrm, 3).setUsage(THREE.DynamicDrawUsage));
     g.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
+    this.rcol = new Float32Array(rn * 3).fill(1);
+    g.setAttribute('color', new THREE.BufferAttribute(this.rcol, 3).setUsage(THREE.DynamicDrawUsage));
     g.setIndex(new THREE.BufferAttribute(gridIndex(RU, SV, false), 1));
     g.boundingSphere = new THREE.Sphere(new THREE.Vector3(0, 0.8, 0), 5);
     this.mesh.geometry.dispose();
@@ -279,11 +282,15 @@ export class Skirt {
         rpos[r + 1] = pos[a + 1] + (pos[b + 1] - pos[a + 1]) * fr + ny / l * off;
         rpos[r + 2] = pos[a + 2] + (pos[b + 2] - pos[a + 2]) * fr + nz / l * off;
         simOf[j * RU + c] = row + (fr < 0.5 ? i0 : i1);
+        // 褶内遮蔽：压在别的褶下面的布、以及刚从上一道褶下露出来的部分更暗；褶展开后消失
+        const ao = 1 - (1 - AO_K[k]) * (1 - o) * (0.35 + 0.65 * t);
+        this.rcol[r] = ao; this.rcol[r + 1] = ao; this.rcol[r + 2] = ao;
       }
     }
     gridNormals(rpos, this.rnrm, RU, SV, true);
     const g = this.mesh.geometry;
     g.attributes.position.needsUpdate = true;
     g.attributes.normal.needsUpdate = true;
+    g.attributes.color.needsUpdate = true;
   }
 }

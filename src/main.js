@@ -10,6 +10,7 @@ import {
 import { StockingLeg, createStockingMaterial, denierToDensity, STYLES } from './stockings.js';
 import { Skirt } from './skirt.js';
 import { makePlaid, PLAIDS } from './textures.js';
+import { createSkinMaterial, createKnitMaterial } from './materials.js';
 import { BODY } from './bodydata.js';
 const ANKLE_P = BODY.ankle;
 
@@ -64,11 +65,7 @@ const root = { x: 0, y: 0.97, z: 0, yaw: 0 };
 const legs = [new Leg(1), new Leg(-1)];
 const colliders = buildColliders(legs);
 
-const skinMat = new THREE.MeshPhysicalMaterial({
-  color: P.skin, roughness: 0.52, vertexColors: true,
-  sheen: 0.5, sheenColor: 0xff7755, sheenRoughness: 0.55, specularIntensity: 0.45,
-  polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1,
-});
+const skinMat = createSkinMaterial(P.skin);
 // 顶点色：膝盖/脚跟微红，顶部是打底短裤
 const legColors = new Float32Array(NU * NV * 3);
 for (let j = 0; j < NV; j++) for (let i = 0; i < NU; i++) {
@@ -86,6 +83,7 @@ const skinMeshes = legs.map((leg) => {
   g.setAttribute('position', new THREE.BufferAttribute(leg.pos, 3).setUsage(THREE.DynamicDrawUsage));
   g.setAttribute('normal', new THREE.BufferAttribute(leg.nrm, 3).setUsage(THREE.DynamicDrawUsage));
   g.setAttribute('color', new THREE.BufferAttribute(legColors, 3));
+  g.setAttribute('aSUV', new THREE.BufferAttribute(SUV, 3));
   g.setIndex(new THREE.BufferAttribute(leg.index, 1));
   g.boundingSphere = new THREE.Sphere(new THREE.Vector3(0, 0.6, 0), 5);
   const m = new THREE.Mesh(g, skinMat);
@@ -97,8 +95,8 @@ const skinMeshes = legs.map((leg) => {
 const bodyGroup = new THREE.Group(); scene.add(bodyGroup);
 const torso = buildTorso();
 const shortsMat = new THREE.MeshStandardMaterial({ color: 0x0c0c0f, roughness: 0.8 });
-const topMat = new THREE.MeshPhysicalMaterial({ color: 0xe8ddcc, roughness: 0.9, sheen: 0.6, sheenColor: 0xffffff, sheenRoughness: 0.8 });
-const bandMat = new THREE.MeshStandardMaterial({ color: 0x5b4336, roughness: 0.8 });
+const topMat = createKnitMaterial(0xe8ddcc);
+const bandMat = new THREE.MeshPhysicalMaterial({ color: 0x5b4336, roughness: 0.5, clearcoat: 0.25, clearcoatRoughness: 0.45 });
 for (const [g, m] of [[torso.pelvis, shortsMat], [torso.top, topMat], [torso.band, bandMat]]) {
   const mesh = new THREE.Mesh(g, m); mesh.castShadow = true; mesh.receiveShadow = true; bodyGroup.add(mesh);
 }
@@ -243,7 +241,7 @@ function updateShoes() {
 }
 
 // ------------------------------------------------------------------ 裙子
-const skirtMat = new THREE.MeshPhysicalMaterial({ roughness: 0.86, side: THREE.DoubleSide, sheen: 0.15, sheenColor: 0xffffff, sheenRoughness: 0.7, bumpScale: 0.6 });
+const skirtMat = new THREE.MeshPhysicalMaterial({ roughness: 0.9, side: THREE.DoubleSide, vertexColors: true, sheen: 0.45, sheenColor: 0xffffff, sheenRoughness: 0.8, bumpScale: 1.6 });
 const skirt = new Skirt(skirtMat);
 scene.add(skirt.mesh);
 function applyPlaid() {
@@ -251,6 +249,7 @@ function applyPlaid() {
   skirtMat.map?.dispose(); skirtMat.bumpMap?.dispose();
   skirtMat.map = map; skirtMat.bumpMap = bump; skirtMat.needsUpdate = true;
   bandMat.color.set(PLAIDS[P.plaid].dark);
+  skirtMat.sheenColor.set(PLAIDS[P.plaid].base).lerp(new THREE.Color(0xffffff), 0.5);
 }
 
 // ------------------------------------------------------------------ 姿态与动作

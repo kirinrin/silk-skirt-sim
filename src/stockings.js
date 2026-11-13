@@ -75,6 +75,9 @@ export function createStockingMaterial() {
           float row = sin(sCourse);
           float loops = sin(sTh * uWales + 1.5708 * sign(row)) * abs(row);
           float knit = loops * sFade;
+          // 中距离仍可见的粗一级网纹（真实丝袜的线圈在远处会“聚集”成更粗的纹理）
+          float fade2 = (1. - smoothstep(.12, .42, dth * uWales / 18.85)) * (1. - smoothstep(.12, .42, dsv * uCourses / 3.)) * (1. - sFade * .8);
+          knit += sin(sTh * uWales / 3. + sin(sCourse / 3.)) * sin(sCourse / 3.) * fade2 * .16;
           // 横向条影（纱线粗细不匀），远看也保留一点
           float bar = sin(vSUV.z * 913. + 2. * sin(sTh * 2.)) * sin(vSUV.z * 377. + 1.3) * (1. - smoothstep(.2, .6, dsv * 300.));
 
