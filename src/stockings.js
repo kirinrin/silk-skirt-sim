@@ -25,10 +25,14 @@ export function createStockingMaterial() {
   const uniforms = {
     uDensity: { value: denierToDensity(20) },
     uGloss: { value: 0.35 },
+    uShine: { value: 0.5 },      // 丝光（纤维方向的各向异性高光）
     uTop: { value: -1 },
     uBand: { value: 0 },
     uWales: { value: 420 },
     uCourses: { value: 640 },
+    uSeam: { value: 0 },         // 背缝线
+    uReinf: { value: 1 },        // 加固袜尖 / 脚跟
+    uFiber: { value: new THREE.Color(0xffffff) },
   };
   const mat = new THREE.MeshPhysicalMaterial({
     color: 0x0e0e12, roughness: 0.6, metalness: 0,
@@ -40,32 +44,95 @@ export function createStockingMaterial() {
     Object.assign(sh.uniforms, uniforms);
     sh.vertexShader = sh.vertexShader
       .replace('#include <common>', `#include <common>
-        attribute float aStretch; attribute vec3 aSUV;
-        varying float vStretch; varying vec3 vSUV;`)
+        attribute vec2 aStretch; attribute vec3 aSUV;
+        varying vec2 vStretch; varying vec3 vSUV;`)
       .replace('#include <begin_vertex>', `#include <begin_vertex>
         vStretch = aStretch; vSUV = aSUV;`);
     sh.fragmentShader = sh.fragmentShader
       .replace('#include <common>', `#include <common>
-        varying float vStretch; varying vec3 vSUV;
-        uniform float uDensity, uGloss, uTop, uBand, uWales, uCourses;
-        float sKnit, sDens;`)
+        varying vec2 vStretch; varying vec3 vSUV;
+        uniform float uDensity, uGloss, uShine, uTop, uBand, uWales, uCourses, uSeam, uReinf;
+        uniform vec3 uFiber;
+        float sDens, sFade, sTh, sWrk, sWrkPh, sCourse;
+        vec3 sTth, sTs;`)
       .replace('#include <color_fragment>', `#include <color_fragment>
         if (vSUV.z < uTop) discard;
         {
-          float th = atan(vSUV.y, vSUV.x);
-          float dth = length(fwidth(vSUV.xy));
-          float dsv = fwidth(vSUV.z);
-          float fade = (1. - smoothstep(.12, .42, dth * uWales / 6.2832))
-                     * (1. - smoothstep(.12, .42, dsv * uCourses));
-          sKnit = sin(th * uWales) * sin(vSUV.z * uCourses * 6.2832) * fade;
+          vec2 cs = normalize(vSUV.xy);
+          sTh = atan(cs.y, cs.x);
+          // 织物坐标系：sTth 绕腿一周（线圈横列方向），sTs 沿腿长
+          vec3 pV = -vViewPosition, dpx = dFdx(pV), dpy = dFdy(pV);
+          float dthx = cs.x * dFdx(vSUV.y) - cs.y * dFdx(vSUV.x), dthy = cs.x * dFdy(vSUV.y) - cs.y * dFdy(vSUV.x);
+          float dsx = dFdx(vSUV.z), dsy = dFdy(vSUV.z);
+          vec3 tA = dpx * dsy - dpy * dsx, tB = dpy * dthx - dpx * dthy;
+          sTth = length(tA) > 1e-12 ? normalize(tA) : vec3(1., 0., 0.);
+          sTs = length(tB) > 1e-12 ? normalize(tB) : vec3(0., 1., 0.);
+
+          float dth = length(vec2(dthx, dthy)), dsv = length(vec2(dsx, dsy));
+          sFade = (1. - smoothstep(.12, .42, dth * uWales / 6.2832)) * (1. - smoothstep(.12, .42, dsv * uCourses));
+          sCourse = vSUV.z * uCourses * 6.2832;
+          // 纬编线圈：相邻横列错开半个线圈
+          float row = sin(sCourse);
+          float loops = sin(sTh * uWales + 1.5708 * sign(row)) * abs(row);
+          float knit = loops * sFade;
+          // 横向条影（纱线粗细不匀），远看也保留一点
+          float bar = sin(vSUV.z * 913. + 2. * sin(sTh * 2.)) * sin(vSUV.z * 377. + 1.3) * (1. - smoothstep(.2, .6, dsv * 300.));
+
+          // 关节处被压缩 -> 细褶
+          sWrk = smoothstep(.93, .70, vStretch.y);
+          sWrkPh = vSUV.z * 6.2832 * 170. + 3.5 * sin(sTh * 3. + vSUV.z * 23.) + 2.4 * sin(sTh * 7. + vSUV.z * 61.) + 1.2 * sin(sTh * 13. - vSUV.z * 90.);
+          float wr = .5 + .5 * sin(sWrkPh);
+
+          sDens = uDensity / pow(max(vStretch.x, .25), 1.15);
+          sDens *= 1. + .55 * knit + .022 * bar;
+          sDens *= 1. + sWrk * (wr * .7 - .1);
+
+          // 袜口
           float band = uBand > 0. ? 1. - smoothstep(uTop + uBand, uTop + uBand + .003, vSUV.z) : 0.;
-          // 袜口的罗纹
-          float rib = .5 + .5 * sin(th * 90.);
-          sDens = uDensity / pow(max(vStretch, .25), 1.15);
-          sDens *= 1. + .5 * sKnit;
+          float rib = .5 + .5 * sin(sTh * 90.);
           sDens = mix(sDens, sDens * 2.6 + 1.1 + rib * .5, band);
-          diffuseColor.rgb *= 1. + .12 * sKnit - band * rib * .15;
+          // 加固袜尖 / 脚跟
+          float toe = smoothstep(.992, 1.0, vSUV.z);
+          float heel = smoothstep(.800, .812, vSUV.z) * (1. - smoothstep(.888, .90, vSUV.z)) * smoothstep(.05, -.25, cs.y);
+          float toeLine = smoothstep(.9885, .992, vSUV.z) * (1. - smoothstep(.992, .9955, vSUV.z));
+          sDens += uReinf * ((toe + heel) * (1.6 + sDens * 1.5) + toeLine * 2.5);
+          // 背缝线
+          float seam = (1. - smoothstep(.010, .022, abs(cs.x))) * step(cs.y, 0.) * (1. - smoothstep(.84, .86, vSUV.z));
+          sDens += uSeam * seam * 6.;
+
+          diffuseColor.rgb *= 1. + .12 * knit - band * rib * .15 - sWrk * wr * .15;
         }`)
+      .replace('#include <normal_fragment_maps>', `#include <normal_fragment_maps>
+        {
+          // 线圈与细褶的微观法线
+          float row = sin(sCourse);
+          float gA = cos(sTh * uWales + 1.5708 * sign(row)) * abs(row);
+          float gB = cos(sCourse) * sin(sTh * uWales);
+          vec3 bump = (sTth * gA + sTs * gB) * (.22 * sFade) + sTs * (cos(sWrkPh) * sWrk * .32);
+          normal = normalize(normal - (bump - normal * dot(bump, normal)));
+        }`)
+      .replace('#include <lights_fragment_end>', `#include <lights_fragment_end>
+        #if NUM_DIR_LIGHTS > 0
+        {
+          // 纤维高光（Kajiya-Kay）：横列方向的纱线 -> 沿腿长的丝光条；另有一条较弱的交叉高光
+          vec3 Vv = normalize(vViewPosition);
+          vec3 Tt = normalize(sTth - normal * dot(sTth, normal));
+          vec3 Tl = normalize(sTs - normal * dot(sTs, normal));
+          float e1 = mix(12., 56., uGloss), e2 = mix(6., 24., uGloss);
+          for (int i = 0; i < NUM_DIR_LIGHTS; i++) {
+            vec3 L = directionalLights[i].direction;
+            vec3 Hh = normalize(L + Vv);
+            float nl = saturate(dot(normal, L) * .75 + .25) * saturate(dot(normal, L) * 4. + 1.);
+            float a1 = dot(Tt, Hh), a2 = dot(Tl, Hh);
+            float lobe = pow(max(1. - a1 * a1, 0.), e1) * 1.0 + pow(max(1. - a2 * a2, 0.), e2) * .28;
+            vec3 lc = directionalLights[i].color;
+            #if NUM_DIR_LIGHT_SHADOWS > 0
+            if (i == 0) lc *= mix(.12, 1., getShadow(directionalShadowMap[0], directionalLightShadows[0].shadowMapSize, directionalLightShadows[0].shadowIntensity, directionalLightShadows[0].shadowBias, directionalLightShadows[0].shadowRadius, vDirectionalShadowCoord[0]));
+            #endif
+            reflectedLight.directSpecular += lc * uFiber * (lobe * nl * uShine * (.04 + .22 * uGloss));
+          }
+        }
+        #endif`)
       .replace('#include <opaque_fragment>', `
         {
           float ndv = abs(dot(normalize(normal), normalize(vViewPosition)));
@@ -88,7 +155,7 @@ export class StockingLeg {
     this.prev = new Float32Array(N * 3);
     this.home = new Float32Array(N * 3);
     this.nrm = new Float32Array(N * 3);
-    this.stretch = new Float32Array(N);
+    this.stretch = new Float32Array(N * 2);
     this.lifted = new Uint8Array(N);
     this.fixed = new Uint8Array(N);
     this.active = false;
@@ -103,7 +170,7 @@ export class StockingLeg {
     const g = new THREE.BufferGeometry();
     g.setAttribute('position', new THREE.BufferAttribute(this.pos, 3).setUsage(THREE.DynamicDrawUsage));
     g.setAttribute('normal', new THREE.BufferAttribute(this.nrm, 3).setUsage(THREE.DynamicDrawUsage));
-    g.setAttribute('aStretch', new THREE.BufferAttribute(this.stretch, 1).setUsage(THREE.DynamicDrawUsage));
+    g.setAttribute('aStretch', new THREE.BufferAttribute(this.stretch, 2).setUsage(THREE.DynamicDrawUsage));
     g.setAttribute('aSUV', new THREE.BufferAttribute(SUV, 3));
     g.setIndex(new THREE.BufferAttribute(leg.index, 1));
     g.boundingSphere = new THREE.Sphere(new THREE.Vector3(0, 0.6, 0), 5);
@@ -158,6 +225,7 @@ export class StockingLeg {
         const lv = Math.sqrt((p[d] - p[e]) ** 2 + (p[d + 1] - p[e + 1]) ** 2 + (p[d + 2] - p[e + 2]) ** 2);
         const o = jj + i;
         tmp[o] = Math.min(2.6, (lu / REST_LU[o]) * (lv / REST_LV[o]));
+        st[o * 2 + 1] = lv / REST_LV[o];
       }
     }
     // 平滑一次，避免贴肤/离肤交界处出现锯齿
@@ -172,7 +240,7 @@ export class StockingLeg {
           v = (v * 2 + tmp[jj + ip] + tmp[jj + im] + tmp[jp + i] + tmp[jm + i] +
             0.5 * (tmp[jp + ip] + tmp[jp + im] + tmp[jm + ip] + tmp[jm + im])) / 8;
         }
-        st[o] = b * v;
+        st[o * 2] = b * v;
       }
     }
   }

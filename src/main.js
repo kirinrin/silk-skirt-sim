@@ -20,7 +20,7 @@ const STOCKING_COLORS = {
 };
 const P = {
   stockOn: true, style: '连裤袜', preset: '黑丝', color: STOCKING_COLORS['黑丝'],
-  denier: 20, gloss: 0.35, tension: 0.7,
+  denier: 20, gloss: 0.4, shine: 0.6, seam: false, reinforce: true, tension: 0.7,
   plaid: '棕色格纹', length: 0.42, pleats: 28,
   wind: 0, windDir: 90, updraft: 0, weight: 0.6, air: 0.25,
   skin: '#eec0a8', shoes: true, idle: true, paused: false,
@@ -116,6 +116,8 @@ function applyStocking() {
   stockMat.sheenRoughness = 0.5 - P.gloss * 0.2;
   u.uDensity.value = denierToDensity(P.denier);
   u.uGloss.value = P.gloss;
+  u.uShine.value = P.shine; u.uSeam.value = P.seam ? 1 : 0; u.uReinf.value = P.reinforce ? 1 : 0;
+  u.uFiber.value.copy(col).lerp(new THREE.Color(0xffffff), 0.7);
   u.uTop.value = st.top; u.uBand.value = st.band;
   for (const s of stockings) { s.mesh.visible = P.stockOn; s.tension = P.tension; }
 }
@@ -387,6 +389,9 @@ fS.add(P, 'preset', Object.keys(STOCKING_COLORS)).name('颜色预设').onChange(
 colorCtl = fS.addColor(P, 'color').name('自定义颜色').onChange(applyStocking);
 fS.add(P, 'denier', 5, 120, 1).name('厚度 (D 丹尼)').onChange(applyStocking);
 fS.add(P, 'gloss', 0, 1, 0.01).name('光泽').onChange(applyStocking);
+fS.add(P, 'shine', 0, 1.5, 0.01).name('丝光条纹').onChange(applyStocking);
+fS.add(P, 'reinforce').name('加固袜尖 / 脚跟').onChange(applyStocking);
+fS.add(P, 'seam').name('背缝线').onChange(applyStocking);
 fS.add(P, 'tension', 0.5, 0.92, 0.01).name('松紧 (小=更紧)').onChange(applyStocking);
 const fK = gui.addFolder('裙子');
 fK.add(P, 'plaid', Object.keys(PLAIDS)).name('面料').onChange(applyPlaid);
