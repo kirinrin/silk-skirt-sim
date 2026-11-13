@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<title>丝袜与百褶裙 · 物理模拟</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #15161b; overflow: hidden;
+    font-family: -apple-system, "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif; }
+  canvas#c { display: block; width: 100vw; height: 100vh; touch-action: none; cursor: grab; }
+  #help { position: fixed; left: 14px; bottom: 12px; color: #b9bcc8; font-size: 12px; line-height: 1.7;
+    background: rgba(20, 21, 27, .72); padding: 10px 14px; border-radius: 10px; pointer-events: none;
+    backdrop-filter: blur(6px); max-width: 300px; }
+  #help b { color: #f1f1f5; font-weight: 600; }
+  #fps { position: fixed; left: 14px; top: 10px; color: #6d7080; font-size: 11px; font-variant-numeric: tabular-nums; }
+  .lil-gui { --width: 270px; --font-size: 12px; }
+  @media (max-width: 640px) { #help { display: none; } .lil-gui { --width: 210px; } }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="fps"></div>
+<div id="help">
+  <b>拖拽丝袜</b>：捏起拉伸，松手回弹<br>
+  <b>拖拽裙子</b>：掀动 / 拉扯布料<br>
+  <b>拖拽背景</b>：旋转视角　<b>滚轮</b>：缩放　<b>右键</b>：平移
+</div>
+<script type="module" src="/src/main.js"></script>
+</body>
+</html>
