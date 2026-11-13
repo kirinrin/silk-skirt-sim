@@ -1,7 +1,7 @@
 // 百褶裙：PBD 布料模拟（粗网格）+ 刀褶几何重建（渲染网格）
 // 模拟网格只表示裙子的“包络面”；褶子在周向被拉开时会展平，收拢时折叠。
 import * as THREE from 'three';
-import { gridIndex, gridNormals, smooth, WAIST_Y, WAIST_A, WAIST_B } from './body.js';
+import { gridIndex, gridNormals, smooth, WAIST_Y, WAIST_A, WAIST_B, WAIST_ZC, HIPS_ZC, waistRadius } from './body.js';
 import { SETT } from './textures.js';
 
 const SUB = 4;          // 每个褶对应的模拟列数
@@ -36,7 +36,12 @@ export class Skirt {
       const a = WAIST_A + (A1 - WAIST_A) * t, b = WAIST_B + (B1 - WAIST_B) * t;
       for (let i = 0; i < SU; i++) {
         const th = i / SU * Math.PI * 2, k = (j * SU + i) * 3;
-        this.rest[k] = a * Math.cos(th); this.rest[k + 1] = WAIST_Y - length * 0.92 * t; this.rest[k + 2] = -0.002 + b * Math.sin(th);
+        // 腰口贴合真实腰围，向下过渡到椭圆锥
+        const wr = waistRadius(th) + 0.007, m = 1 - smooth(0, 0.3, t);
+        const zc = WAIST_ZC + (HIPS_ZC - WAIST_ZC) * smooth(0, 0.7, t);
+        this.rest[k] = a * Math.cos(th) * (1 - m) + wr * Math.cos(th) * m;
+        this.rest[k + 1] = WAIST_Y - length * 0.92 * t;
+        this.rest[k + 2] = zc + b * Math.sin(th) * (1 - m) + wr * Math.sin(th) * m;
       }
     }
     for (let i = 0; i < SU; i++) this.invM[i] = 0;
@@ -201,17 +206,20 @@ export class Skirt {
 
   collide(rx, ry, rz, cy, sy, col) {
     const { SU, SV, pos, prev } = this, n = SU * SV;
-    const e = col.ell, caps = col.caps, groundY = 0.004;
+    const ells = col.ells, caps = col.caps, groundY = 0.004;
     for (let a = SU; a < n; a++) {
       const k = a * 3;
       const wx = pos[k] - rx, wz = pos[k + 2] - rz;
       let x = wx * cy - wz * sy, y = pos[k + 1] - ry, z = wx * sy + wz * cy;
       let hit = false;
-      // 骨盆椭球
-      const qx = (x - e.c.x) / e.r.x, qy = (y - e.c.y) / e.r.y, qz = (z - e.c.z) / e.r.z;
-      const l = Math.sqrt(qx * qx + qy * qy + qz * qz);
-      if (l < 1 && l > 1e-6) {
-        x = e.c.x + qx / l * e.r.x; y = e.c.y + qy / l * e.r.y; z = e.c.z + qz / l * e.r.z; hit = true;
+      // 骨盆 / 腹部椭球
+      for (let q = 0; q < ells.length; q++) {
+        const e = ells[q];
+        const qx = (x - e.c.x) / e.r.x, qy = (y - e.c.y) / e.r.y, qz = (z - e.c.z) / e.r.z;
+        const l = Math.sqrt(qx * qx + qy * qy + qz * qz);
+        if (l < 1 && l > 1e-6) {
+          x = e.c.x + qx / l * e.r.x; y = e.c.y + qy / l * e.r.y; z = e.c.z + qz / l * e.r.z; hit = true;
+        }
       }
       // 大腿 / 小腿胶囊
       for (let c = 0; c < caps.length; c++) {

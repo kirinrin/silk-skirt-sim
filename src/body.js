@@ -63,65 +63,47 @@ export function gridNormals(pos, nrm, NU, NV, seamDup = false) {
   }
 }
 
-// ---------------------------------------------------------------- 腿的形状
-export const NU = 64, NV = 200;
-export const HIP_X = 0.088, KNEE_S = 0.42, ANKLE_S = 0.82, LEG_LEN = 1.079;
-const LEAN = 0.036; // 双腿略向内收
+// ---------------------------------------------------------------- 真实人体数据（MakeHuman 基础网格重采样）
+import { BODY } from './bodydata.js';
 
-// [s, rx(横向), rf(前/脚背), rb(后/脚底), phi(脊线前倾角°)]
-const LEG_ST = [
-  [0.00, .086, .088, .100, 0],
-  [0.08, .086, .088, .098, 0],
-  [0.20, .0755, .079, .084, 0],
-  [0.33, .0595, .062, .062, 0],
-  [0.42, .0535, .0585, .053, 0],
-  [0.47, .0490, .0510, .052, 0],
-  [0.56, .0520, .0490, .063, 0],
-  [0.68, .0390, .0400, .046, 0],
-  [0.78, .0285, .0315, .033, 0],
-  [0.82, .0290, .0330, .036, 0],
-  [0.86, .0310, .0340, .046, 28],
-  [0.90, .0340, .0310, .041, 50],
-  [0.95, .0370, .0250, .027, 55],
-  [1.00, .0420, .0180, .018, 60],
-  [1.035, .0400, .0140, .013, 84],
-  [1.062, .0300, .0100, .010, 90],
-  [1.075, .0130, .0050, .005, 90],
-  [1.079, .0010, .0010, .001, 90],
-];
+function decode(b64) {
+  const bin = atob(b64), u8 = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i);
+  const q = new Int16Array(u8.buffer), f = new Float32Array(q.length);
+  for (let i = 0; i < q.length; i++) f[i] = q[i] / BODY.Q;
+  return f;
+}
+export const NU = BODY.NU, NV = BODY.NV;
+export const HIP_X = BODY.hipX, KNEE_S = BODY.kneeS, ANKLE_S = BODY.ankleS, LEG_LEN = BODY.legLen;
+const KNEE = BODY.knee, ANKLE = BODY.ankle, BALL = BODY.ball, BALL_S = BODY.ballS;
+export const FOOT_PITCH = 0.62; // 穿高跟鞋时脚踝跖屈角
 
 const N = NU * NV;
-export const REST = new Float32Array(N * 3);   // 静止姿态（髋关节为原点，腿向 -y）
-export const S_ROW = new Float32Array(NV);     // 每行沿腿的弧长 s
+export const REST = decode(BODY.rest);         // x>0 侧的腿，髋关节为原点；另一条腿运行时镜像
+export const SPINE = decode(BODY.spine);       // 每行: 中心 xyz + 前向 F xyz
+export const S_ROW = new Float32Array(NV);     // 每行的名义弧长 s（膝=0.42，踝=0.82）
 export const R_ROW = new Float32Array(NV);     // 每行平均半径
-export const SPINE = new Float32Array(NV * 3); // y, z, phi
+export const RMAX_ROW = new Float32Array(NV);  // 每行最大半径
 export const LEG_INDEX = gridIndex(NU, NV, true);
-export const SUV = new Float32Array(N * 3);    // (cosθ, sinθ, s)
+export const LEG_INDEX_FLIP = LEG_INDEX.slice();
+for (let k = 0; k < LEG_INDEX_FLIP.length; k += 3) { const t = LEG_INDEX_FLIP[k + 1]; LEG_INDEX_FLIP[k + 1] = LEG_INDEX_FLIP[k + 2]; LEG_INDEX_FLIP[k + 2] = t; }
+export const SUV = new Float32Array(N * 3);    // (cosθ, sinθ, s)  cos>0 为外侧，sin>0 为前/脚背
 export const REST_H = new Float32Array(N), REST_V = new Float32Array(N);
 export const REST_D1 = new Float32Array(N), REST_D2 = new Float32Array(N);
 export const REST_LU = new Float32Array(N), REST_LV = new Float32Array(N);
 
 (function buildRest() {
-  const o = [0, 0, 0, 0];
-  let cy = 0, cz = 0, prevPhi = 0;
-  const ds = LEG_LEN / (NV - 1);
   for (let j = 0; j < NV; j++) {
-    const s = j * ds;
-    sampleTable(LEG_ST, s, o);
-    const rx = Math.max(o[0], .0008), rf = Math.max(o[1], .0008), rb = Math.max(o[2], .0008);
-    const phi = Math.max(0, o[3]) * Math.PI / 180;
-    if (j > 0) { const pm = (phi + prevPhi) / 2; cy -= Math.cos(pm) * ds; cz += Math.sin(pm) * ds; }
-    prevPhi = phi;
-    S_ROW[j] = s; R_ROW[j] = (rx * 2 + rf + rb) / 4;
-    SPINE[j * 3] = cy; SPINE[j * 3 + 1] = cz; SPINE[j * 3 + 2] = phi;
-    const fy = Math.sin(phi), fz = Math.cos(phi);
+    const s = j / (NV - 1) * LEG_LEN;
+    S_ROW[j] = s;
+    let r = 0;
     for (let i = 0; i < NU; i++) {
-      const th = i / NU * Math.PI * 2, c = Math.cos(th), sn = Math.sin(th);
-      const r = sn > 0 ? rf : rb;
-      const k = (j * NU + i) * 3;
-      REST[k] = rx * c; REST[k + 1] = cy + fy * r * sn; REST[k + 2] = cz + fz * r * sn;
-      SUV[k] = c; SUV[k + 1] = sn; SUV[k + 2] = s;
+      const th = i / NU * Math.PI * 2, k = (j * NU + i) * 3;
+      SUV[k] = Math.cos(th); SUV[k + 1] = Math.sin(th); SUV[k + 2] = s;
+      const d = Math.sqrt((REST[k] - SPINE[j * 6]) ** 2 + (REST[k + 1] - SPINE[j * 6 + 1]) ** 2 + (REST[k + 2] - SPINE[j * 6 + 2]) ** 2);
+      r += d; if (d > RMAX_ROW[j]) RMAX_ROW[j] = d;
     }
+    R_ROW[j] = r / NU;
   }
   const dist = (a, b) => Math.sqrt((REST[a * 3] - REST[b * 3]) ** 2 + (REST[a * 3 + 1] - REST[b * 3 + 1]) ** 2 + (REST[a * 3 + 2] - REST[b * 3 + 2]) ** 2);
   for (let j = 0; j < NV; j++) for (let i = 0; i < NU; i++) {
@@ -140,9 +122,11 @@ export const rowOfS = (s) => Math.round(s / LEG_LEN * (NV - 1));
 
 export class Leg {
   constructor(side) {
-    this.side = side;             // +1: x>0   -1: x<0
+    this.side = side;             // +1: x>0   -1: x<0（镜像）
+    this.index = side > 0 ? LEG_INDEX : LEG_INDEX_FLIP;
     this.hip = 0;                 // 髋前屈（弧度）
-    this.knee = 0;                // 屈膝（弧度）
+    this.knee = 0;                // 屈膝
+    this.foot = 0;                // 踝跖屈（踮脚 / 高跟鞋）
     this.loc = new Float32Array(N * 3);
     this.pos = new Float32Array(N * 3);
     this.nrm = new Float32Array(N * 3);
@@ -150,25 +134,34 @@ export class Leg {
     this.kneeLocal = new THREE.Vector3();
     this.ankleLocal = new THREE.Vector3();
     this.hipLocal = new THREE.Vector3(side * HIP_X, 0, 0);
-    this._t = [0, 0, 0];
+    this.thighLocal = new THREE.Vector3();
+    this._t = [0, 0, 0]; this._ca = 1; this._sa = 0;
   }
 
-  // 静止点 -> 身体局部坐标（髋关节中心为原点）
+  // 静止点（腿局部坐标）-> 身体局部坐标。关节依次为：跖趾、踝、膝、髋，都绕 x 轴
   skin(x, y, z, s, out) {
-    const th = this.knee * smooth(0.345, 0.50, s);
-    let py = y + KNEE_S;
-    const c = Math.cos(th), sn = Math.sin(th);
-    const y1 = py * c - z * sn - KNEE_S, z1 = py * sn + z * c;
-    const ca = Math.cos(this.hip), sa = Math.sin(this.hip);
-    const y2 = y1 * ca + z1 * sa, z2 = -y1 * sa + z1 * ca;
-    const b = -this.side * LEAN, cb = Math.cos(b), sb = Math.sin(b);
-    out[0] = x * cb - y2 * sb + this.side * HIP_X;
-    out[1] = x * sb + y2 * cb;
-    out[2] = z2;
+    if (s !== this._s || this.foot !== this._f || this.knee !== this._k) { // 同一行的顶点共用三角函数
+      this._s = s; this._f = this.foot; this._k = this.knee;
+      const tt = -this.foot * 0.92 * smooth(BALL_S - 0.03, BALL_S + 0.03, s);
+      const ta = this.foot * smooth(0.775, 0.885, s), tk = this.knee * smooth(0.345, 0.50, s);
+      this._r = [Math.cos(tt), Math.sin(tt), Math.cos(ta), Math.sin(ta), Math.cos(tk), Math.sin(tk)];
+    }
+    const r = this._r;
+    let py = y - BALL[1], pz = z - BALL[2];
+    y = py * r[0] - pz * r[1] + BALL[1]; z = py * r[1] + pz * r[0] + BALL[2];
+    py = y - ANKLE[1]; pz = z - ANKLE[2];
+    y = py * r[2] - pz * r[3] + ANKLE[1]; z = py * r[3] + pz * r[2] + ANKLE[2];
+    py = y - KNEE[1]; pz = z - KNEE[2];
+    const y1 = py * r[4] - pz * r[5] + KNEE[1], z1 = py * r[5] + pz * r[4] + KNEE[2];
+    const ca = this._ca, sa = this._sa;
+    out[0] = this.side * (x + HIP_X);
+    out[1] = y1 * ca + z1 * sa;
+    out[2] = -y1 * sa + z1 * ca;
     return out;
   }
 
   updateLocal() {
+    this._ca = Math.cos(this.hip); this._sa = Math.sin(this.hip);
     const loc = this.loc, t = this._t;
     let minY = 1e9;
     for (let j = 0; j < NV; j++) {
@@ -181,12 +174,14 @@ export class Leg {
       }
     }
     this.minY = minY;
-    this.skin(0, -KNEE_S, 0, 0, t); this.kneeLocal.set(t[0], t[1], t[2]);
-    this.skin(0, -ANKLE_S, 0, 1, t); this.ankleLocal.set(t[0], t[1], t[2]);
+    this.skin(KNEE[0], KNEE[1], KNEE[2], 0, t); this.kneeLocal.set(t[0], t[1], t[2]);
+    const tj = rowOfS(0.07) * 6;
+    this.skin(SPINE[tj], SPINE[tj + 1], SPINE[tj + 2], 0, t); this.thighLocal.set(t[0], t[1], t[2]);
+    this.skin(ANKLE[0], ANKLE[1], ANKLE[2], 0.6, t); this.ankleLocal.set(t[0], t[1], t[2]);
   }
 
   applyRoot(root) {
-    const loc = this.loc, pos = this.pos;
+    const loc = this.loc, pos = this.pos, nrm = this.nrm;
     const c = Math.cos(root.yaw), s = Math.sin(root.yaw);
     for (let k = 0; k < N * 3; k += 3) {
       const x = loc[k], z = loc[k + 2];
@@ -194,26 +189,22 @@ export class Leg {
       pos[k + 1] = loc[k + 1] + root.y;
       pos[k + 2] = -x * s + z * c + root.z;
     }
-    gridNormals(pos, this.nrm, NU, NV);
+    gridNormals(pos, nrm, NU, NV);
+    if (this.side < 0) for (let k = 0; k < N * 3; k++) nrm[k] = -nrm[k];
   }
 }
 
-// ---------------------------------------------------------------- 躯干放样
-function loft(table, nu, nv, linear) {
-  const pos = new Float32Array(nu * nv * 3);
-  const o = [0, 0, 0, 0];
-  const y0 = table[0][0], y1 = table[table.length - 1][0];
-  const neg = table.map((r) => [-r[0], ...r.slice(1)]); // 自上而下，键需递增
-  for (let j = 0; j < nv; j++) {
-    const y = y0 + (y1 - y0) * j / (nv - 1);
-    sampleTable(neg, -y, o, linear);
-    for (let i = 0; i < nu; i++) {
-      const th = i / nu * Math.PI * 2, c = Math.cos(th), sn = Math.sin(th);
-      const k = (j * nu + i) * 3;
-      pos[k] = Math.max(o[0], .0005) * c; pos[k + 1] = y;
-      pos[k + 2] = (o[3] || 0) + Math.max(sn > 0 ? o[1] : o[2], .0005) * sn;
-    }
-  }
+// ---------------------------------------------------------------- 躯干
+export const WAIST_Y = BODY.waist.y - 0.006;
+export const WAIST_A = BODY.waist.a + 0.008, WAIST_B = BODY.waist.b + 0.008;
+export const WAIST_ZC = BODY.waist.zc, HIPS_ZC = BODY.hips.zc;
+// 真实腰围在极角 th 处的半径（以 (0, WAIST_ZC) 为中心）
+export function waistRadius(th) {
+  const r = BODY.waist.ring, n = r.length, f = ((th / (Math.PI * 2)) % 1 + 1) % 1 * n, i = Math.floor(f);
+  return r[i % n] + (r[(i + 1) % n] - r[i % n]) * (f - i);
+}
+
+function gridGeo(pos, nu, nv) {
   const g = new THREE.BufferGeometry();
   g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
   g.setIndex(new THREE.BufferAttribute(gridIndex(nu, nv, true), 1));
@@ -221,43 +212,50 @@ function loft(table, nu, nv, linear) {
   return g;
 }
 
-export const WAIST_Y = 0.178;
-export const WAIST_A = 0.125, WAIST_B = 0.095;
-
 export function buildTorso() {
-  const pelvis = loft([
-    [0.19, .118, .090, .084, 0],
-    [0.12, .140, .094, .098, 0],
-    [0.05, .163, .094, .114, 0],
-    [-0.02, .168, .090, .116, 0],
-    [-0.07, .120, .075, .095, 0],
-    [-0.105, .060, .050, .060, 0],
-    [-0.12, .004, .004, .004, 0],
-  ], 48, 40, false);
-  const top = loft([
-    [0.42, .001, .001, .001, 0],
-    [0.419, .130, .100, .090, 0],
-    [0.30, .125, .098, .088, 0],
-    [0.19, .1195, .0915, .0855, 0],
-  ], 48, 24, true);
-  const band = loft([
-    [0.208, .1215, .0915, .0915, -.002],
-    [0.207, .1290, .0990, .0990, -.002],
-    [0.168, .1300, .1000, .1000, -.002],
-    [0.167, .1240, .0940, .0940, -.002],
-  ], 64, 40, true);
-  return { pelvis, top, band };
+  const pelvis = gridGeo(decode(BODY.pelvis.pos), BODY.pelvis.nu, BODY.pelvis.nv);
+  // 上衣：躯干外扩几毫米，顶部封口
+  const nu = BODY.torso.nu, src = decode(BODY.torso.pos), rows = BODY.torso.nv;
+  const top = new Float32Array((rows + 1) * nu * 3);
+  let cx = 0, cz = 0;
+  for (let i = 0; i < nu; i++) { cx += src[i * 3] / nu; cz += src[i * 3 + 2] / nu; }
+  for (let i = 0; i < nu; i++) { top[i * 3] = cx; top[i * 3 + 1] = src[1]; top[i * 3 + 2] = cz; }
+  for (let j = 0; j < rows; j++) {
+    let mx = 0, mz = 0;
+    for (let i = 0; i < nu; i++) { mx += src[(j * nu + i) * 3] / nu; mz += src[(j * nu + i) * 3 + 2] / nu; }
+    for (let i = 0; i < nu; i++) {
+      const k = (j * nu + i) * 3, o = ((j + 1) * nu + i) * 3;
+      const dx = src[k] - mx, dz = src[k + 2] - mz, l = Math.hypot(dx, dz) || 1;
+      const off = src[k + 1] < WAIST_Y + 0.005 ? -0.005 : 0.004; // 腰带以下收进裙子里
+      top[o] = src[k] + dx / l * off; top[o + 1] = src[k + 1]; top[o + 2] = src[k + 2] + dz / l * off;
+    }
+  }
+  // 腰带
+  const bn = 64, bp = new Float32Array(4 * bn * 3);
+  const ring = [[WAIST_Y + 0.030, -0.004], [WAIST_Y + 0.029, 0.004], [WAIST_Y - 0.010, 0.005], [WAIST_Y - 0.011, -0.002]];
+  for (let j = 0; j < 4; j++) for (let i = 0; i < bn; i++) {
+    const th = i / bn * Math.PI * 2, k = (j * bn + i) * 3;
+    const r = waistRadius(th) + 0.008 + ring[j][1];
+    bp[k] = r * Math.cos(th); bp[k + 1] = ring[j][0]; bp[k + 2] = WAIST_ZC + r * Math.sin(th);
+  }
+  return { pelvis, top: gridGeo(top, nu, rows + 1), band: gridGeo(bp, bn, 4) };
 }
 
 // 裙子用的碰撞体（身体局部坐标）
 export function buildColliders(legs) {
+  const R = (s) => R_ROW[rowOfS(s)], RM = (s) => RMAX_ROW[rowOfS(s)];
   const caps = [];
   for (const leg of legs) {
-    caps.push({ a: leg.hipLocal, b: leg.kneeLocal, ra: .096, rb: .062 });
-    caps.push({ a: leg.kneeLocal, b: leg.ankleLocal, ra: .060, rb: .038 });
+    caps.push({ a: leg.thighLocal, b: leg.kneeLocal, ra: RM(0.12) + 0.008, rb: R(KNEE_S) + 0.008 });
+    caps.push({ a: leg.kneeLocal, b: leg.ankleLocal, ra: R(0.52) + 0.008, rb: R(0.78) + 0.006 });
   }
+  const h = BODY.hips, w = BODY.waist;
   return {
-    ell: { c: new THREE.Vector3(0, .02, -.012), r: new THREE.Vector3(.181, .19, .126) },
+    ells: [
+      { c: new THREE.Vector3(0, 0.03, h.zc), r: new THREE.Vector3(h.a + 0.012, 0.20, h.b + 0.012) },
+      { c: new THREE.Vector3(0, w.y - 0.10, (w.zc + h.zc) / 2), r: new THREE.Vector3((w.a + h.a) / 2 + 0.008, 0.10, (w.b + h.b) / 2 + 0.014) },
+      { c: new THREE.Vector3(0, w.y - 0.035, w.zc), r: new THREE.Vector3(w.a + 0.004, 0.07, w.b + 0.004) },
+    ],
     caps,
   };
 }

@@ -1,6 +1,6 @@
 # 丝袜与百褶裙 · three.js 物理模拟
 
-纯程序化（无外部模型/贴图）的 three.js 演示：可捏起回弹的丝袜 + 带刀褶的格纹百褶裙布料模拟。
+three.js 演示：可捏起回弹的丝袜 + 带刀褶的格纹百褶裙布料模拟。人体来自 MakeHuman 基础网格（CC0），贴图全部程序化生成。
 
 ```bash
 npm install
@@ -15,7 +15,9 @@ npm run build    # 输出到 dist/
 - 右侧面板：丝袜颜色 / 厚度(丹尼) / 光泽 / 松紧 / 款式，裙子面料 / 裙长 / 褶数 / 重量 / 空气阻力，风，动作（摇摆、转圈、跳跃、屈膝）
 
 ## 实现
-- `src/body.js` 放样生成的腿与躯干，CPU 蒙皮（髋、膝），裙子用的碰撞体
+- `assets/makehuman/base.obj` MakeHuman 基础人体网格（CC0）
+- `tools/fit-body.mjs` 把人体网格重采样成腿 / 骨盆的规则网格，生成 `src/bodydata.js`（`node tools/fit-body.mjs`）
+- `src/body.js` 腿与躯干，CPU 蒙皮（髋、膝、踝、跖趾），裙子用的碰撞体
 - `src/stockings.js` 丝袜材质（随视角与拉伸变化的纤维遮盖率、针织纹理、袜口）与只受拉的弹性薄膜 PBD 模拟
 - `src/skirt.js` 裙子 PBD 布料（风、空气阻力、身体碰撞），褶子随周向拉伸展平的几何重建
 - `src/textures.js` 程序化格纹面料

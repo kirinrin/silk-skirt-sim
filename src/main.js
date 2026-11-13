@@ -3,12 +3,15 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import GUI from 'lil-gui';
 import {
-  Leg, NU, NV, LEG_INDEX, SUV, S_ROW, SPINE, REST, rowOfS, smooth,
+  Leg, NU, NV, SUV, S_ROW, REST, rowOfS, smooth, FOOT_PITCH,
   buildTorso, buildColliders,
+  gridNormals,
 } from './body.js';
 import { StockingLeg, createStockingMaterial, denierToDensity, STYLES } from './stockings.js';
 import { Skirt } from './skirt.js';
 import { makePlaid, PLAIDS } from './textures.js';
+import { BODY } from './bodydata.js';
+const ANKLE_P = BODY.ankle;
 
 // ------------------------------------------------------------------ 参数
 const STOCKING_COLORS = {
@@ -18,7 +21,7 @@ const STOCKING_COLORS = {
 const P = {
   stockOn: true, style: '连裤袜', preset: '黑丝', color: STOCKING_COLORS['黑丝'],
   denier: 20, gloss: 0.35, tension: 0.7,
-  plaid: '棕色格纹', length: 0.38, pleats: 28,
+  plaid: '棕色格纹', length: 0.42, pleats: 28,
   wind: 0, windDir: 90, updraft: 0, weight: 0.6, air: 0.25,
   skin: '#eec0a8', shoes: true, idle: true, paused: false,
 };
@@ -83,7 +86,7 @@ const skinMeshes = legs.map((leg) => {
   g.setAttribute('position', new THREE.BufferAttribute(leg.pos, 3).setUsage(THREE.DynamicDrawUsage));
   g.setAttribute('normal', new THREE.BufferAttribute(leg.nrm, 3).setUsage(THREE.DynamicDrawUsage));
   g.setAttribute('color', new THREE.BufferAttribute(legColors, 3));
-  g.setIndex(new THREE.BufferAttribute(LEG_INDEX, 1));
+  g.setIndex(new THREE.BufferAttribute(leg.index, 1));
   g.boundingSphere = new THREE.Sphere(new THREE.Vector3(0, 0.6, 0), 5);
   const m = new THREE.Mesh(g, skinMat);
   m.frustumCulled = false; m.castShadow = true; m.receiveShadow = true;
@@ -132,10 +135,11 @@ shoeMat.onBeforeCompile = (sh) => {
         float sn = normalize(vSUV.xy).y;
         float line = mix(-0.34, 0.22, 1. - smoothstep(0.03, 0.085, q));
         line = mix(line, 1.6, smoothstep(0.150, 0.192, q));
-        line -= (1. - smoothstep(0.010, 0.026, q)) * 3.;
+        line -= (1. - smoothstep(0.004, 0.016, q)) * 3.;
         if (sn > line) discard;
       }`);
 };
+const TOE_J0 = rowOfS(0.93) - SHOE_J0, shoeTmp = new Float32Array(NU * SHOE_ROWS * 3);
 const heelGeo = new THREE.CylinderGeometry(0.0105, 0.0042, 1, 16);
 const shoes = legs.map((leg) => {
   const n = NU * SHOE_ROWS;
@@ -147,7 +151,7 @@ const shoes = legs.map((leg) => {
   const idx = [];
   for (let j = 0; j < SHOE_ROWS - 1; j++) for (let i = 0; i < NU; i++) {
     const a = j * NU + i, b = j * NU + (i + 1) % NU, c = a + NU, d = b + NU;
-    idx.push(a, b, c, b, d, c);
+    if (leg.side > 0) idx.push(a, b, c, b, d, c); else idx.push(a, c, b, b, c, d);
   }
   g.setIndex(idx);
   g.boundingSphere = new THREE.Sphere(new THREE.Vector3(0, 0.2, 0), 5);
@@ -157,7 +161,7 @@ const shoes = legs.map((leg) => {
   return { leg, mesh, heel, pos, nrm };
 });
 // 打底短裤的裤腿（包住大腿根部）
-const SHORTS_ROWS = rowOfS(0.078) + 1;
+const SHORTS_ROWS = rowOfS(0.135) + 1;
 const shortLegs = legs.map((leg) => {
   const n = NU * SHORTS_ROWS;
   const pos = new Float32Array(n * 3), nrm = new Float32Array(n * 3);
@@ -167,7 +171,7 @@ const shortLegs = legs.map((leg) => {
   const idx = [];
   for (let j = 0; j < SHORTS_ROWS - 1; j++) for (let i = 0; i < NU; i++) {
     const a = j * NU + i, b = j * NU + (i + 1) % NU, c = a + NU, d = b + NU;
-    idx.push(a, b, c, b, d, c);
+    if (leg.side > 0) idx.push(a, b, c, b, d, c); else idx.push(a, c, b, b, c, d);
   }
   g.setIndex(idx);
   g.boundingSphere = new THREE.Sphere(new THREE.Vector3(0, 0.9, 0), 5);
@@ -183,15 +187,20 @@ function updateShorts() {
     sh.mesh.geometry.attributes.normal.needsUpdate = true;
   }
 }
-// 鞋跟锚点（静止姿态）
-const HEEL_J = rowOfS(0.868);
-const heelA = (() => {
-  const y = SPINE[HEEL_J * 3], z = SPINE[HEEL_J * 3 + 1], phi = SPINE[HEEL_J * 3 + 2];
-  return [0, y - Math.sin(phi) * 0.036, z - Math.cos(phi) * 0.036];
+// 鞋跟：上端固定在脚跟底部，下端在站姿时刚好触地
+const HEEL_V = rowOfS(0.842) * NU + (NU * 3) / 4;
+const heelA = [REST[HEEL_V * 3], REST[HEEL_V * 3 + 1], REST[HEEL_V * 3 + 2]];
+const heelB = (() => {
+  const leg = legs[0], t = [0, 0, 0];
+  leg.foot = FOOT_PITCH; leg.updateLocal();
+  leg.skin(heelA[0], heelA[1], heelA[2], 0.86, t);
+  // 站姿下的鞋跟底端，再反算回静止姿态
+  const by = leg.minY - 0.004 - 0, bz = t[2] - 0.006;
+  const c = Math.cos(-FOOT_PITCH), sn = Math.sin(-FOOT_PITCH), A = ANKLE_P;
+  const py = by - A[1], pz = bz - A[2];
+  leg.foot = 0;
+  return [heelA[0], py * c - pz * sn + A[1], py * sn + pz * c + A[2]];
 })();
-let restMinY = 1e9;
-for (let k = 1; k < REST.length; k += 3) restMinY = Math.min(restMinY, REST[k]);
-const heelB = [0, restMinY - 0.004, heelA[2] - 0.004];
 const _a = new THREE.Vector3(), _b = new THREE.Vector3(), _up = new THREE.Vector3(0, 1, 0), _t = [0, 0, 0];
 function localToWorld(t, out) {
   const c = Math.cos(root.yaw), s = Math.sin(root.yaw);
@@ -202,11 +211,29 @@ function updateShoes() {
     sh.mesh.visible = sh.heel.visible = P.shoes;
     if (!P.shoes) continue;
     const lp = sh.leg.pos, ln = sh.leg.nrm, off = SHOE_J0 * NU * 3;
-    for (let k = 0; k < sh.pos.length; k++) { sh.pos[k] = lp[off + k] + ln[off + k] * 0.0034; sh.nrm[k] = ln[off + k]; }
+    for (let j = 0; j < SHOE_ROWS; j++) {
+      const o = 0.0034 + 0.007 * smooth(0.92, 0.99, S_ROW[SHOE_J0 + j]);
+      for (let k = j * NU * 3; k < (j + 1) * NU * 3; k++) { sh.pos[k] = lp[off + k] + ln[off + k] * o; sh.nrm[k] = ln[off + k]; }
+    }
+    // 鞋头：把脚趾的起伏抹平成光滑的鞋面
+    const p = sh.pos, tmp = shoeTmp;
+    for (let pass = 0; pass < 16; pass++) {
+      tmp.set(p);
+      for (let j = TOE_J0; j < SHOE_ROWS - 1; j++) {
+        const w = 0.9 * smooth(0.93, 0.975, S_ROW[SHOE_J0 + j]);
+        for (let i = 0; i < NU; i++) for (let c = 0; c < 3; c++) {
+          const a = (j * NU + i) * 3 + c;
+          const m = (tmp[(j * NU + (i + 1) % NU) * 3 + c] + tmp[(j * NU + (i + NU - 1) % NU) * 3 + c] + tmp[a - NU * 3] + tmp[a + NU * 3]) / 4;
+          p[a] = tmp[a] + (m - tmp[a]) * w;
+        }
+      }
+    }
+    gridNormals(p, sh.nrm, NU, SHOE_ROWS);
+    if (sh.leg.side < 0) for (let k = 0; k < sh.nrm.length; k++) sh.nrm[k] = -sh.nrm[k];
     sh.mesh.geometry.attributes.position.needsUpdate = true;
     sh.mesh.geometry.attributes.normal.needsUpdate = true;
-    localToWorld(sh.leg.skin(heelA[0], heelA[1], heelA[2], 1, _t), _a);
-    localToWorld(sh.leg.skin(heelB[0], heelB[1], heelB[2], 1, _t), _b);
+    localToWorld(sh.leg.skin(heelA[0], heelA[1], heelA[2], 0.86, _t), _a);
+    localToWorld(sh.leg.skin(heelB[0], heelB[1], heelB[2], 0.86, _t), _b);
     sh.heel.position.copy(_a).add(_b).multiplyScalar(0.5);
     sh.heel.scale.set(1, _a.distanceTo(_b), 1);
     sh.heel.quaternion.setFromUnitVectors(_up, _a.clone().sub(_b).normalize());
@@ -258,6 +285,7 @@ function updatePose(dt) {
     else act.jump = null;
   }
   kR = Math.max(kR, 0.8 * crouch); kL = Math.max(kL, 0.8 * crouch);
+  legs[0].foot = legs[1].foot = P.shoes ? FOOT_PITCH : 0;
   legs[0].knee = kR; legs[0].hip = kR * 0.5;
   legs[1].knee = kL; legs[1].hip = kL * 0.5;
   for (const leg of legs) leg.updateLocal();

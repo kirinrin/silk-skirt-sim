@@ -105,7 +105,7 @@ export class StockingLeg {
     g.setAttribute('normal', new THREE.BufferAttribute(this.nrm, 3).setUsage(THREE.DynamicDrawUsage));
     g.setAttribute('aStretch', new THREE.BufferAttribute(this.stretch, 1).setUsage(THREE.DynamicDrawUsage));
     g.setAttribute('aSUV', new THREE.BufferAttribute(SUV, 3));
-    g.setIndex(new THREE.BufferAttribute(LEG_INDEX, 1));
+    g.setIndex(new THREE.BufferAttribute(leg.index, 1));
     g.boundingSphere = new THREE.Sphere(new THREE.Vector3(0, 0.6, 0), 5);
     this.mesh = new THREE.Mesh(g, material);
     this.mesh.frustumCulled = false;
@@ -183,6 +183,9 @@ export class StockingLeg {
     const j0 = this.j0, j1 = this.j1, tau = this.tension;
     const K = 0.9, SUBS = 2, ITERS = 9;
     fixed.fill(0);
+    // 模拟窗口之外的部分始终贴在腿上
+    pos.set(home.subarray(0, j0 * NU * 3), 0);
+    if (j1 < NV - 1) pos.set(home.subarray((j1 + 1) * NU * 3), (j1 + 1) * NU * 3);
     for (let i = 0; i < NU; i++) { fixed[j0 * NU + i] = 1; fixed[j1 * NU + i] = 1; }
 
     // 抓取：拉得过远则脱手
