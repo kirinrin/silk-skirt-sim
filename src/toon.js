@@ -13,24 +13,27 @@ const FRAME = `
 // 色阶 + 边缘光 + 可选的高光条。I 是“受光量”，已包含阴影贴图，所以裙子的投影也是硬边的
 const CEL = `
   float I = dot(reflectedLight.directDiffuse, vec3(.3333)) / max(dot(diffuseColor.rgb, vec3(.3333)), 1e-3);
-  float lit = smoothstep(uTh - uSoft, uTh + uSoft, I);
+  float lit = smoothstep(uTh - uSoft, uTh + uSoft, I);            // 柔边的阴影形状
+  float grad = smoothstep(.02, .85, I);                           // 叠在上面的大范围渐变（手绘感的过渡）
   vec3 Vv = normalize(vViewPosition);
   float ndv = saturate(dot(normal, Vv));
-  vec3 cel = mix(diffuseColor.rgb * uShade, diffuseColor.rgb, lit);
-  cel = mix(cel, cel * uShade, (1. - smoothstep(uTh * .28 - uSoft, uTh * .28 + uSoft, I)) * uDeep);   // 更深的第二段阴影
-  float rimMask = smoothstep(.60, .66, 1. - ndv) * lit;
-  cel += uRim * rimMask;`;
+  vec3 cel = diffuseColor.rgb * mix(uShade, vec3(1.), lit * .62 + grad * .38);
+  cel *= mix(uEdge, vec3(1.), smoothstep(0., .55, ndv));          // 靠近轮廓处略深、略偏色
+  cel += uRim * pow(1. - ndv, 3.) * (.35 + .65 * lit);            // 柔和的逆光边`;
 const STREAK = `
-  float hl = 0.;
+  float hl = 0., glow = 0.;
   #if NUM_DIR_LIGHTS > 0
   {
     ${FRAME}
     vec3 L = directionalLights[0].direction, Hh = normalize(L + Vv);
     float a1 = dot(Tt, Hh);
     float lobe = pow(max(1. - a1 * a1, 0.), uSpecPow) * saturate(dot(normal, L) * 2.5);
-    // 高光条不是一整根：沿腿长被打断成几段，膝盖处最亮
-    float seg = .62 + .38 * sin(vSUV.z * 17. + 1.2) + .35 * exp(-pow((vSUV.z - .43) / .05, 2.));
-    hl = smoothstep(.80, .86, lobe * seg) * lit * smoothstep(.35, .6, ndv);
+    // 高光只落在几处：大腿、膝盖、小腿；每处是一个柔光晕加一个清晰的亮核
+    float sz = vSUV.z;
+    float seg = exp(-pow((sz - .24) / .07, 2.)) + .9 * exp(-pow((sz - .43) / .03, 2.)) + .6 * exp(-pow((sz - .63) / .09, 2.));
+    float m = lobe * seg * lit * smoothstep(.35, .6, ndv);
+    hl = smoothstep(.74, .79, m);
+    glow = smoothstep(.30, .95, m) * .28;
   }
   #endif`;
 
@@ -38,8 +41,9 @@ export function makeToon(o = {}) {
   const u = {
     uShade: { value: new THREE.Color(...(o.shade || [0.72, 0.68, 0.80])) },
     uRim: { value: new THREE.Color(...(o.rim || [0, 0, 0])) },
-    uTh: { value: o.th ?? 0.30 }, uSoft: { value: o.soft ?? 0.012 }, uDeep: { value: o.deep ?? 0 },
-    uSpec: { value: o.streak || 0 }, uSpecPow: { value: o.specPow || 9 },
+    uEdge: { value: new THREE.Color(...(o.edge || [0.95, 0.94, 0.98])) },
+    uTh: { value: o.th ?? 0.30 }, uSoft: { value: o.soft ?? 0.05 }, uDeep: { value: o.deep ?? 0 },
+    uSpec: { value: o.streak || 0 }, uSpecPow: { value: o.specPow || 14 },
   };
   const mat = new THREE.MeshLambertMaterial({
     color: o.color ?? 0xffffff, map: o.map || null, vertexColors: !!o.vertexColors, side: o.side ?? THREE.FrontSide,
@@ -55,13 +59,13 @@ export function makeToon(o = {}) {
     }
     sh.fragmentShader = sh.fragmentShader
       .replace('#include <common>', `#include <common>
-        uniform vec3 uShade, uRim; uniform float uTh, uSoft, uDeep, uSpec, uSpecPow;
+        uniform vec3 uShade, uRim, uEdge; uniform float uTh, uSoft, uDeep, uSpec, uSpecPow;
         ${suv ? 'varying vec3 vSUV;' : ''}`)
       .replace('#include <color_fragment>', `#include <color_fragment>\n${o.mask || ''}`)
       .replace('#include <opaque_fragment>', `
         {
           ${CEL}
-          ${o.streak ? STREAK + '\ncel = mix(cel, vec3(1.), hl * uSpec);' : ''}
+          ${o.streak ? STREAK + '\ncel = mix(cel, vec3(1.), min(1., hl + glow) * uSpec);' : ''}
           outgoingLight = cel;
         }
         #include <opaque_fragment>`);
@@ -73,8 +77,9 @@ export function makeToon(o = {}) {
 export function makeToonStocking(uniforms) {
   const u = {
     ...uniforms, // 与写实材质共用 uDensity / uTop / uBand / uSeam / uReinf / uGloss / uShine
-    uShade: { value: new THREE.Color(0.6, 0.6, 0.7) }, uRim: { value: new THREE.Color(0, 0, 0) },
-    uTh: { value: 0.30 }, uSoft: { value: 0.012 }, uDeep: { value: 0 }, uSpecPow: { value: 9 },
+    uShade: { value: new THREE.Color(0.6, 0.6, 0.7) }, uRim: { value: new THREE.Color(0.12, 0.12, 0.16) },
+    uEdge: { value: new THREE.Color(0.92, 0.93, 1.0) },
+    uTh: { value: 0.30 }, uSoft: { value: 0.06 }, uDeep: { value: 0 }, uSpecPow: { value: 14 },
   };
   const mat = new THREE.MeshLambertMaterial({ color: 0x0e0e12, transparent: true, side: THREE.DoubleSide, depthWrite: true });
   mat.userData.uniforms = u;
@@ -87,14 +92,14 @@ export function makeToonStocking(uniforms) {
     sh.fragmentShader = sh.fragmentShader
       .replace('#include <common>', `#include <common>
         varying vec2 vStretch; varying vec3 vSUV;
-        uniform vec3 uShade, uRim; uniform float uTh, uSoft, uDeep, uSpecPow;
+        uniform vec3 uShade, uRim, uEdge; uniform float uTh, uSoft, uDeep, uSpecPow;
         uniform float uDensity, uGloss, uShine, uTop, uBand, uSeam, uReinf;
         float sDens, sBand;`)
       .replace('#include <color_fragment>', `#include <color_fragment>
         if (vSUV.z < uTop) discard;
         {
           vec2 c2 = normalize(vSUV.xy);
-          sDens = uDensity * 2.4 / pow(max(vStretch.x, .25), 1.3);
+          sDens = uDensity * 1.9 / pow(max(vStretch.x, .25), 1.6);
           sBand = uBand > 0. ? 1. - smoothstep(uTop + uBand, uTop + uBand + .002, vSUV.z) : 0.;
           sDens = mix(sDens, sDens * 3. + 1.4, sBand);
           float toe = smoothstep(.992, .996, vSUV.z);
@@ -110,7 +115,7 @@ export function makeToonStocking(uniforms) {
           ${STREAK}
           float gz = 1. - ndv;
           float a = 1. - exp(-sDens * (1. + 2.2 * gz * gz) / max(ndv, .12));
-          float s = hl * (.25 + .6 * uGloss) * min(uShine * 1.4, 1.);
+          float s = min(1., hl + glow) * (.45 + .55 * uGloss) * min(uShine * 1.4, 1.);
           cel = mix(cel, vec3(1.), s);
           diffuseColor.a = clamp(a + s, 0., 1.);
           outgoingLight = cel;
@@ -142,7 +147,7 @@ export class OutlinePass {
           float dl = lin(vUv - vec2(o.x, 0.)), dr = lin(vUv + vec2(o.x, 0.)), dd = lin(vUv - vec2(0., o.y)), du = lin(vUv + vec2(0., o.y));
           float dmin = min(d, min(min(dl, dr), min(dd, du)));
           float lap = abs(dl + dr + dd + du - 4. * d) / dmin;
-          float e = smoothstep(.010, .028, lap);
+          float e = smoothstep(.012, .030, lap) * .9;
           vec3 c = texture2D(tColor, vUv).rgb;
           vec3 c1 = texture2D(tColor, vUv - vec2(o.x, 0.)).rgb, c2 = texture2D(tColor, vUv + vec2(o.x, 0.)).rgb;
           vec3 c3 = texture2D(tColor, vUv - vec2(0., o.y)).rgb, c4 = texture2D(tColor, vUv + vec2(0., o.y)).rgb;
@@ -151,7 +156,7 @@ export class OutlinePass {
           if (dot(c2, vec3(1.)) < m) { dk = c2; m = dot(c2, vec3(1.)); }
           if (dot(c3, vec3(1.)) < m) { dk = c3; m = dot(c3, vec3(1.)); }
           if (dot(c4, vec3(1.)) < m) { dk = c4; }
-          vec3 line = dk * vec3(.34, .24, .28);
+          vec3 line = dk * vec3(.50, .30, .27);
           gl_FragColor = vec4(mix(c, line, e), 1.);
           #include <colorspace_fragment>
         }`,
@@ -165,7 +170,7 @@ export class OutlinePass {
     const W = Math.floor(w * dpr), H = Math.floor(h * dpr);
     this.rt.setSize(W, H);
     this.mat.uniforms.uTexel.value.set(1 / W, 1 / H);
-    this.mat.uniforms.uWidth.value = 1.15 * dpr;
+    this.mat.uniforms.uWidth.value = 0.8 * dpr;
   }
   render(scene, camera) {
     const r = this.renderer;
@@ -173,4 +178,40 @@ export class OutlinePass {
     r.setRenderTarget(this.rt); r.render(scene, camera);
     r.setRenderTarget(null); r.render(this.quad, this.cam);
   }
+}
+
+// 高调场景用的木地板：程序化木纹，向远处淡出到白色
+export function makeWoodFloor() {
+  const S = 1024, cv = document.createElement('canvas'); cv.width = cv.height = S;
+  const g = cv.getContext('2d');
+  let seed = 7; const rnd = () => ((seed = (seed * 1664525 + 1013904223) >>> 0) / 4294967296);
+  const PW = S / 8;
+  for (let i = 0; i < 8; i++) {
+    let y = -rnd() * S;
+    while (y < S) {
+      const len = S * (0.35 + rnd() * 0.5), t = rnd();
+      g.fillStyle = `hsl(${27 + t * 6}, ${52 + t * 10}%, ${56 + t * 12}%)`;
+      g.fillRect(i * PW, y, PW, len);
+      for (let k = 0; k < 26; k++) { // 木纹
+        g.strokeStyle = `rgba(120, 70, 30, ${0.05 + rnd() * 0.09})`; g.lineWidth = 0.6 + rnd() * 1.6;
+        const x = i * PW + rnd() * PW; g.beginPath(); g.moveTo(x, y);
+        g.bezierCurveTo(x + (rnd() - .5) * 10, y + len * .3, x + (rnd() - .5) * 10, y + len * .7, x + (rnd() - .5) * 6, y + len); g.stroke();
+      }
+      g.fillStyle = 'rgba(90, 50, 20, .55)'; g.fillRect(i * PW, y + len - 2, PW, 2);
+      y += len;
+    }
+    g.fillStyle = 'rgba(90, 50, 20, .6)'; g.fillRect(i * PW, 0, 2, S);
+    g.fillStyle = 'rgba(255, 235, 200, .25)'; g.fillRect(i * PW + 2, 0, 2, S);
+  }
+  const map = new THREE.CanvasTexture(cv); map.colorSpace = THREE.SRGBColorSpace;
+  map.wrapS = map.wrapT = THREE.RepeatWrapping; map.repeat.set(5, 5); map.anisotropy = 8;
+  const ac = document.createElement('canvas'); ac.width = ac.height = 256;
+  const a = ac.getContext('2d'), gr = a.createRadialGradient(128, 128, 20, 128, 128, 128);
+  gr.addColorStop(0, '#fff'); gr.addColorStop(0.45, '#fff'); gr.addColorStop(1, '#000');
+  a.fillStyle = gr; a.fillRect(0, 0, 256, 256);
+  // 不受光照：保持明亮的平涂木色，影子由单独的阴影层叠加（可以控制深浅和颜色）
+  const mat = new THREE.MeshBasicMaterial({ map, alphaMap: new THREE.CanvasTexture(ac), transparent: true, depthWrite: false });
+  const mesh = new THREE.Mesh(new THREE.CircleGeometry(3.2, 64), mat);
+  mesh.rotation.x = -Math.PI / 2; mesh.position.y = -0.002; mesh.renderOrder = -2;
+  return mesh;
 }

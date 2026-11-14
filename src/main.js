@@ -11,7 +11,7 @@ import { StockingLeg, createStockingMaterial, denierToDensity, STYLES } from './
 import { Skirt } from './skirt.js';
 import { makePlaid, PLAIDS } from './textures.js';
 import { createSkinMaterial, createKnitMaterial } from './materials.js';
-import { makeToon, makeToonStocking, OutlinePass } from './toon.js';
+import { makeToon, makeToonStocking, OutlinePass, makeWoodFloor } from './toon.js';
 import { BODY } from './bodydata.js';
 const ANKLE_P = BODY.ankle;
 
@@ -59,7 +59,7 @@ const fill = new THREE.DirectionalLight(0xffe0d0, 0.5); fill.position.set(-2.2, 
 scene.add(new THREE.HemisphereLight(0x8890a8, 0x1a1512, 0.35));
 
 const ground = new THREE.Mesh(new THREE.CircleGeometry(3, 64), new THREE.ShadowMaterial({ opacity: 0.45 }));
-ground.rotation.x = -Math.PI / 2; ground.receiveShadow = true; ground.material.depthWrite = false; scene.add(ground);
+ground.rotation.x = -Math.PI / 2; ground.receiveShadow = true; ground.material.depthWrite = false; ground.renderOrder = -1; scene.add(ground);
 
 // ------------------------------------------------------------------ 身体
 const root = { x: 0, y: 0.97, z: 0, yaw: 0 };
@@ -121,7 +121,7 @@ function applyStocking() {
   if (typeof toon !== 'undefined') {
     const l = col.r * 0.3 + col.g * 0.5 + col.b * 0.2;
     toon.stock.color.copy(col);
-    toon.stock.userData.uniforms.uShade.value.setRGB(0.55, 0.55, 0.66).lerp(new THREE.Color(0.84, 0.84, 0.95), Math.min(1, l * 1.6));
+    toon.stock.userData.uniforms.uShade.value.setRGB(0.55, 0.55, 0.66).lerp(new THREE.Color(0.80, 0.84, 0.97), Math.min(1, l * 1.6));
   }
   for (const s of stockings) { s.mesh.visible = P.stockOn; s.tension = P.tension; }
 }
@@ -388,9 +388,9 @@ canvas.addEventListener('pointercancel', endDrag);
 
 // ------------------------------------------------------------------ 渲染风格（写实 / 动画）
 const toon = {
-  skin: makeToon({ color: P.skin, vertexColors: true, shade: [0.95, 0.70, 0.66], rim: [0.10, 0.07, 0.06], streak: 0.55, specPow: 9 }),
-  skirt: makeToon({ side: THREE.DoubleSide, shade: [0.70, 0.66, 0.82] }),
-  top: makeToon({ color: 0xf6f1e8, shade: [0.80, 0.80, 0.93] }),
+  skin: makeToon({ color: P.skin, vertexColors: true, shade: [0.97, 0.72, 0.62], edge: [1.0, 0.90, 0.85], rim: [0.30, 0.24, 0.20], soft: 0.06, streak: 0.95, specPow: 14 }),
+  skirt: makeToon({ side: THREE.DoubleSide, shade: [0.72, 0.70, 0.86], rim: [0.10, 0.10, 0.12] }),
+  top: makeToon({ color: 0xfbf8f2, shade: [0.80, 0.83, 0.96], rim: [0.06, 0.06, 0.08] }),
   band: makeToon({ color: 0x5b4336, shade: [0.62, 0.58, 0.70] }),
   shorts: makeToon({ color: 0x1b1b22, shade: [0.6, 0.6, 0.75] }),
   shoe: makeToon({ color: 0x1a1a20, side: THREE.DoubleSide, shade: [0.55, 0.55, 0.7], rim: [0.22, 0.22, 0.26], mask: SHOE_MASK }),
@@ -399,6 +399,7 @@ const toon = {
 };
 toon.skin.polygonOffset = true; toon.skin.polygonOffsetFactor = 1; toon.skin.polygonOffsetUnits = 1;
 const outline = new OutlinePass(renderer);
+const woodFloor = makeWoodFloor(); scene.add(woodFloor);
 const looks = [
   ...skinMeshes.map((m) => [m, skinMat, toon.skin]),
   ...stockings.map((s) => [s.mesh, stockMat, toon.stock]),
@@ -410,10 +411,11 @@ const looks = [
 function applyLook() {
   const t = P.look === '动画';
   for (const [mesh, real, tn] of looks) mesh.material = t ? tn : real;
-  scene.background.set(t ? 0xeef0f6 : 0x15161b);
+  scene.background.set(t ? 0xfbfaf8 : 0x15161b);
+  woodFloor.visible = t;
   renderer.toneMapping = t ? THREE.NoToneMapping : THREE.ACESFilmicToneMapping;
-  ground.material.opacity = t ? 0.16 : 0.45;
-  ground.material.color.set(t ? 0x5a5f8a : 0x000000);
+  ground.material.opacity = t ? 0.30 : 0.45;
+  ground.material.color.set(t ? 0x6b3a1c : 0x000000);
   document.body.classList.toggle('toon', t);
 }
 
