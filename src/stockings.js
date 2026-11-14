@@ -33,6 +33,7 @@ export function createStockingMaterial() {
     uSeam: { value: 0 },         // 背缝线
     uReinf: { value: 1 },        // 加固袜尖 / 脚跟
     uFiber: { value: new THREE.Color(0xffffff) },
+    uSkin: { value: new THREE.Color(0xeec0a8) },   // 皮肤底色（分层着色用）
   };
   const mat = new THREE.MeshPhysicalMaterial({
     color: 0x0e0e12, roughness: 0.6, metalness: 0,
@@ -44,15 +45,15 @@ export function createStockingMaterial() {
     Object.assign(sh.uniforms, uniforms);
     sh.vertexShader = sh.vertexShader
       .replace('#include <common>', `#include <common>
-        attribute vec2 aStretch; attribute vec3 aSUV;
-        varying vec2 vStretch; varying vec3 vSUV;`)
+        attribute vec3 aStretch; attribute vec3 aSUV;
+        varying vec3 vStretch; varying vec3 vSUV;`)
       .replace('#include <begin_vertex>', `#include <begin_vertex>
         vStretch = aStretch; vSUV = aSUV;`);
     sh.fragmentShader = sh.fragmentShader
       .replace('#include <common>', `#include <common>
-        varying vec2 vStretch; varying vec3 vSUV;
+        varying vec3 vStretch; varying vec3 vSUV;
         uniform float uDensity, uGloss, uShine, uTop, uBand, uWales, uCourses, uSeam, uReinf;
-        uniform vec3 uFiber;
+        uniform vec3 uFiber, uSkin;
         float sDens, sFade, sTh, sWrk, sWrkPh, sCourse;
         vec3 sTth, sTs;`)
       .replace('#include <color_fragment>', `#include <color_fragment>
@@ -136,15 +137,49 @@ export function createStockingMaterial() {
           }
         }
         #endif`)
+      .replace('#include <shadowmap_pars_fragment>', `#include <shadowmap_pars_fragment>
+        float keyShadow() {
+          #if NUM_DIR_LIGHT_SHADOWS > 0
+          return getShadow(directionalShadowMap[0], directionalLightShadows[0].shadowMapSize, directionalLightShadows[0].shadowIntensity, directionalLightShadows[0].shadowBias, directionalLightShadows[0].shadowRadius, vDirectionalShadowCoord[0]);
+          #else
+          return 1.;
+          #endif
+        }`)
       .replace('#include <opaque_fragment>', `
         {
+          // ---- 分层模型：纱线层盖在皮肤层上，而不是简单的半透明混合 ----
           float ndv = abs(dot(normalize(normal), normalize(vViewPosition)));
-          // 纤维遮盖率：掠射角时光线穿过更多纱线 -> 边缘更深
           float gz = 1. - ndv;
-          float a = 1. - exp(-sDens * (1. + 1.6 * gz * gz) / max(ndv, .10));
-          float spec = dot(reflectedLight.directSpecular + reflectedLight.indirectSpecular, vec3(.3333));
-          a = clamp(a + spec * (.15 + uGloss * 1.5), 0., 1.);
-          diffuseColor.a = a;
+          // 沿视线方向的纱线遮盖率：掠射角时穿过更多纱线 -> 边缘更实
+          float aV = 1. - exp(-sDens * (1. + 1.6 * gz * gz) / max(ndv, .10));
+          float spec = dot(reflectedLight.directSpecular + reflectedLight.indirectSpecular * .5, vec3(.3333));
+          aV = clamp(aV + spec * (.15 + uGloss * .9), 0., 1.);
+          // 贴肤程度：被捏起离开皮肤后，层间的相互作用消失
+          float contact = exp(-max(vStretch.z, 0.) / .004);
+          // 皮肤表面的入射光（主光带阴影）
+          vec3 E = vec3(.30) * (.6 + .4 * normal.y);
+          float aL = 0.;
+          #if NUM_DIR_LIGHTS > 0
+          for (int i = 0; i < NUM_DIR_LIGHTS; i++) {
+            float nl = saturate(dot(normal, directionalLights[i].direction));
+            vec3 lc = directionalLights[i].color * nl; if (i == 0) lc *= keyShadow();
+            E += lc;
+          }
+          // 沿主光方向的遮盖率：纱线在皮肤上投下的细密阴影
+          aL = 1. - exp(-sDens / max(saturate(dot(normal, directionalLights[0].direction)), .18));
+          #endif
+          vec3 skinLit = uSkin * E * RECIPROCAL_PI;
+          vec3 dye = diffuseColor.rgb;
+          // 1) 皮肤被纱线挡光而变暗：多扣掉一部分透过量
+          float shade = aL * .62 * contact;
+          float A = 1. - (1. - aV) * (1. - shade);
+          // 2) 皮肤的反光从背后照亮纱线（深色纱线几乎不受影响，浅色/肉色纱线会透出暖色）
+          vec3 back = dye * skinLit * (.75 * contact) * aV;
+          // 3) 光在纱线与皮肤之间来回散射：让浅色丝袜更匀净、带一点柔光
+          vec3 inter = dye * skinLit * ((1. - aV) * aL * .5 * contact);
+          vec3 C = outgoingLight * aV + back + inter;
+          outgoingLight = C / max(A, 1e-3);
+          diffuseColor.a = A;
         }
         #include <opaque_fragment>`);
   };
@@ -158,7 +193,7 @@ export class StockingLeg {
     this.prev = new Float32Array(N * 3);
     this.home = new Float32Array(N * 3);
     this.nrm = new Float32Array(N * 3);
-    this.stretch = new Float32Array(N * 2);
+    this.stretch = new Float32Array(N * 3);
     this.lifted = new Uint8Array(N);
     this.fixed = new Uint8Array(N);
     this.active = false;
@@ -173,7 +208,7 @@ export class StockingLeg {
     const g = new THREE.BufferGeometry();
     g.setAttribute('position', new THREE.BufferAttribute(this.pos, 3).setUsage(THREE.DynamicDrawUsage));
     g.setAttribute('normal', new THREE.BufferAttribute(this.nrm, 3).setUsage(THREE.DynamicDrawUsage));
-    g.setAttribute('aStretch', new THREE.BufferAttribute(this.stretch, 2).setUsage(THREE.DynamicDrawUsage));
+    g.setAttribute('aStretch', new THREE.BufferAttribute(this.stretch, 3).setUsage(THREE.DynamicDrawUsage));
     g.setAttribute('aSUV', new THREE.BufferAttribute(SUV, 3));
     g.setIndex(new THREE.BufferAttribute(leg.index, 1));
     g.boundingSphere = new THREE.Sphere(new THREE.Vector3(0, 0.6, 0), 5);
@@ -206,6 +241,7 @@ export class StockingLeg {
     if (this.active) {
       this.simulate(dt);
       gridNormals(this.pos, this.nrm, NU, NV);
+      if (leg.side < 0) for (let k = 0; k < N * 3; k++) this.nrm[k] = -this.nrm[k]; // 镜像腿的网格绕向相反
     } else {
       this.pos.set(home);
       this.nrm.set(ln);
@@ -218,6 +254,11 @@ export class StockingLeg {
   }
 
   computeStretch() {
+    // 离开皮肤的距离（贴肤时为 0）
+    { const st = this.stretch, p = this.pos, h = this.home, n = this.leg.nrm;
+      if (this.active) for (let o = 0, k = 0; o < N; o++, k += 3) st[o * 3 + 2] = (p[k] - h[k]) * n[k] + (p[k + 1] - h[k + 1]) * n[k + 1] + (p[k + 2] - h[k + 2]) * n[k + 2];
+      else if (this._hadGap !== false) for (let o = 0; o < N; o++) st[o * 3 + 2] = 0;
+      this._hadGap = this.active; }
     const p = this.pos, st = this.stretch, base = this.base, tmp = this.tmp || (this.tmp = new Float32Array(N));
     for (let j = 0; j < NV; j++) {
       const jm = (j > 0 ? j - 1 : 0) * NU, jp = (j < NV - 1 ? j + 1 : NV - 1) * NU, jj = j * NU;
@@ -228,7 +269,7 @@ export class StockingLeg {
         const lv = Math.sqrt((p[d] - p[e]) ** 2 + (p[d + 1] - p[e + 1]) ** 2 + (p[d + 2] - p[e + 2]) ** 2);
         const o = jj + i;
         tmp[o] = Math.min(2.6, (lu / REST_LU[o]) * (lv / REST_LV[o]));
-        st[o * 2 + 1] = lv / REST_LV[o];
+        st[o * 3 + 1] = lv / REST_LV[o];
       }
     }
     // 平滑一次，避免贴肤/离肤交界处出现锯齿
@@ -243,7 +284,7 @@ export class StockingLeg {
           v = (v * 2 + tmp[jj + ip] + tmp[jj + im] + tmp[jp + i] + tmp[jm + i] +
             0.5 * (tmp[jp + ip] + tmp[jp + im] + tmp[jm + ip] + tmp[jm + im])) / 8;
         }
-        st[o * 2] = b * v;
+        st[o * 3] = b * v;
       }
     }
   }

@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+import { makeStudioEnv } from './studio.js';
 import GUI from 'lil-gui';
 import {
   Leg, NU, NV, SUV, S_ROW, REST, rowOfS, smooth, FOOT_PITCH,
@@ -25,7 +25,7 @@ const P = {
   denier: 20, gloss: 0.4, shine: 0.6, seam: false, reinforce: true, tension: 0.7,
   plaid: '棕色格纹', length: 0.42, pleats: 28,
   wind: 0, windDir: 90, updraft: 0, weight: 0.6, air: 0.25,
-  skin: '#eec0a8', shoes: true, idle: true, paused: false, look: '动画',
+  skin: '#eec0a8', shoes: true, idle: true, paused: false, look: window.__defaultLook || '动画',
 };
 
 // ------------------------------------------------------------------ 渲染器 / 场景
@@ -39,14 +39,13 @@ renderer.toneMappingExposure = 1.05;
 
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x15161b);
-const pmrem = new THREE.PMREMGenerator(renderer);
-scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
-scene.environmentIntensity = 0.42;
+scene.environment = makeStudioEnv(renderer);
+scene.environmentIntensity = 0.75;
 
 const camera = new THREE.PerspectiveCamera(30, 1, 0.05, 30);
 camera.position.set(0.55, 0.78, 2.75);
 
-const key = new THREE.DirectionalLight(0xfff1e2, 2.7);
+const key = new THREE.DirectionalLight(0xfff1e2, 2.3);
 key.position.set(1.3, 2.7, 2.3);
 key.castShadow = true;
 key.shadow.mapSize.set(2048, 2048);
@@ -111,10 +110,12 @@ function applyStocking() {
   const col = new THREE.Color(P.color);
   stockMat.color.copy(col);
   stockMat.sheenColor.copy(col).lerp(new THREE.Color(0xffffff), 0.18).multiplyScalar(0.25 + P.gloss * 0.5);
-  stockMat.roughness = 0.78 - P.gloss * 0.5;
+  stockMat.roughness = 0.72 - P.gloss * 0.5;
+  stockMat.envMapIntensity = 0.22 + P.gloss * 0.5; // 低光泽的丝袜几乎不反射环境，避免整体发灰
   stockMat.sheenRoughness = 0.5 - P.gloss * 0.2;
   u.uDensity.value = denierToDensity(P.denier);
   u.uGloss.value = P.gloss;
+  u.uSkin.value.set(P.skin);
   u.uShine.value = P.shine; u.uSeam.value = P.seam ? 1 : 0; u.uReinf.value = P.reinforce ? 1 : 0;
   u.uFiber.value.copy(col).lerp(new THREE.Color(0xffffff), 0.7);
   u.uTop.value = st.top; u.uBand.value = st.band;
@@ -451,7 +452,7 @@ fA.add({ f: () => { if (!act.jump) act.jump = { t: 0 }; } }, 'f').name('跳一�
 fA.add(P, 'idle').name('待机屈膝');
 fA.add({ f: () => { act.spin = act.sway = act.jump = null; yawBase = 0; updatePose(0); skirt.reset(root); } }, 'f').name('复位');
 const fB = gui.addFolder('身体');
-fB.addColor(P, 'skin').name('肤色').onChange((v) => { skinMat.color.set(v); toon.skin.color.set(v); });
+fB.addColor(P, 'skin').name('肤色').onChange((v) => { skinMat.color.set(v); toon.skin.color.set(v); applyStocking(); });
 fB.add(P, 'shoes').name('高跟鞋');
 fB.close();
 
