@@ -25,7 +25,7 @@ const P = {
   denier: 20, gloss: 0.4, shine: 0.6, seam: false, reinforce: true, tension: 0.7,
   plaid: '棕色格纹', length: 0.42, pleats: 28,
   wind: 0, windDir: 90, updraft: 0, weight: 0.6, air: 0.25,
-  skin: '#eec0a8', shoes: true, idle: true, paused: false, look: window.__defaultLook || '动画',
+  skin: '#eec0a8', shoes: true, idle: true, paused: false, look: window.__defaultLook || '写实',
 };
 
 // ------------------------------------------------------------------ 渲染器 / 场景
@@ -432,7 +432,7 @@ function applyLook() {
 
 // ------------------------------------------------------------------ 面板
 const gui = new GUI({ title: '参数' });
-gui.add(P, 'look', ['动画', '写实']).name('渲染风格').onChange(applyLook);
+gui.add(P, 'look', ['写实', '动画']).name('渲染风格').onChange(applyLook);
 const fS = gui.addFolder('丝袜');
 fS.add(P, 'stockOn').name('穿着丝袜').onChange(applyStocking);
 fS.add(P, 'style', Object.keys(STYLES)).name('款式').onChange(applyStocking);
