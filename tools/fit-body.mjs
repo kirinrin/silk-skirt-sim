@@ -1,5 +1,5 @@
 // 把 MakeHuman 基础网格（CC0）重采样成本项目使用的规则网格：
-//   腿：NU×NV 的 (θ, s) 网格（丝袜模拟、蒙皮、鞋都依赖这个拓扑）
+//   腿：NU×NV 的 (θ, s) 网格（丝袜模拟、蒙皮、鞋都依赖这个拓扑）；采样前先对源网格做 Catmull-Clark 细分
 //   骨盆/躯干：水平环 + 底部半球
 // 用法: node tools/fit-body.mjs   ->  生成 src/bodydata.js
 import fs from 'node:fs';
@@ -30,8 +30,51 @@ const H = cen('joint-l-upper-leg'), K = cen('joint-l-knee'), A = cen('joint-l-an
 // 身体局部坐标：髋关节高度为 y=0，髋关节所在的冠状面为 z=0
 const OY = H[1], OZ = H[2];
 const tr = (p) => [p[0], p[1] - OY, p[2] - OZ];
+// ---------------------------------------------------------------- Catmull-Clark 细分
+// 基础网格很粗（腿上一个四边形有 2~3cm），直接求交会把平面的棱角采进规则网格。
+// MakeHuman 的网格本来就是按细分曲面设计的，这里先细分 SUBDIV 次再采样。
+function catmullClark(P, F) {
+  const nP = P.length, fp = F.map((f) => { const c = [0, 0, 0]; for (const i of f) for (let k = 0; k < 3; k++) c[k] += P[i][k] / f.length; return c; });
+  const edges = new Map(), ekey = (a, b) => (a < b ? a * nP + b : b * nP + a);
+  F.forEach((f, fi) => f.forEach((a, k) => {
+    const b = f[(k + 1) % f.length], key = ekey(a, b);
+    let e = edges.get(key); if (!e) edges.set(key, e = { a, b, f: [] }); e.f.push(fi);
+  }));
+  const out = P.map((p) => p.slice());
+  const fSum = P.map(() => [0, 0, 0, 0]), eSum = P.map(() => [0, 0, 0, 0]), bSum = P.map(() => [0, 0, 0, 0]);
+  F.forEach((f, fi) => { for (const i of f) { for (let k = 0; k < 3; k++) fSum[i][k] += fp[fi][k]; fSum[i][3]++; } });
+  for (const e of edges.values()) {
+    const mid = [0, 1, 2].map((k) => (P[e.a][k] + P[e.b][k]) / 2), sharp = e.f.length !== 2; // 边界（眼眶、口腔开口）按折痕处理
+    e.i = out.length;
+    out.push(sharp ? mid : [0, 1, 2].map((k) => (P[e.a][k] + P[e.b][k] + fp[e.f[0]][k] + fp[e.f[1]][k]) / 4));
+    for (const v of [e.a, e.b]) {
+      const acc = sharp ? bSum[v] : eSum[v], o = v === e.a ? e.b : e.a;
+      if (sharp) { for (let k = 0; k < 3; k++) acc[k] += P[o][k]; } else for (let k = 0; k < 3; k++) acc[k] += mid[k];
+      acc[3]++;
+    }
+  }
+  for (let i = 0; i < nP; i++) {
+    const b = bSum[i], n = fSum[i][3];
+    if (b[3] === 2) for (let k = 0; k < 3; k++) out[i][k] = (6 * P[i][k] + b[k]) / 8;
+    else if (b[3] === 0 && n >= 3 && eSum[i][3] === n) for (let k = 0; k < 3; k++) out[i][k] = (fSum[i][k] / n + 2 * eSum[i][k] / n + (n - 3) * P[i][k]) / n;
+  }
+  const nF = [];
+  F.forEach((f, fi) => {
+    const c = out.length; out.push(fp[fi]);
+    f.forEach((a, k) => nF.push([a, edges.get(ekey(a, f[(k + 1) % f.length])).i, c, edges.get(ekey(f[(k + f.length - 1) % f.length], a)).i]));
+  });
+  return [out, nF];
+}
+const SUBDIV = 2;
+let bodyP, bodyF;
+{
+  const map = new Map(); bodyP = [];
+  bodyF = groups.body.map((f) => f.map((i) => { let m = map.get(i); if (m === undefined) { m = bodyP.length; map.set(i, m); bodyP.push(tr(V[i])); } return m; }));
+  for (let l = 0; l < SUBDIV; l++) [bodyP, bodyF] = catmullClark(bodyP, bodyF);
+}
 const tris = [];
-for (const f of groups.body) for (let k = 1; k < f.length - 1; k++) tris.push([tr(V[f[0]]), tr(V[f[k]]), tr(V[f[k + 1]])]);
+for (const f of bodyF) for (let k = 1; k < f.length - 1; k++) tris.push([bodyP[f[0]], bodyP[f[k]], bodyP[f[k + 1]]]);
+console.log('subdivided body:', bodyP.length, 'verts', tris.length, 'tris');
 const hip = tr(H), knee = tr(K), ankle = tr(A), gy = groundY - OY;
 console.log('height', (Math.max(...groups.body.flat().map((i) => V[i][1])) - groundY).toFixed(3), 'hip', hip, 'knee', knee, 'ankle', ankle, 'ground', gy.toFixed(3));
 
@@ -43,9 +86,18 @@ const cross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a
 const norm = (a) => { const l = Math.hypot(...a) || 1; return [a[0] / l, a[1] / l, a[2] / l]; };
 function makeCaster(list) {
   const pre = list.map(([a, b, c]) => ({ a, e1: sub(b, a), e2: sub(c, a) }));
+  // 按高度分桶：射线只和它经过的高度范围内的三角形求交
+  const BIN = 0.01, y0 = Math.min(...list.map((t) => Math.min(t[0][1], t[1][1], t[2][1])));
+  const bins = [], bin = (y) => Math.floor((y - y0) / BIN);
+  list.forEach((t, i) => {
+    const lo = bin(Math.min(t[0][1], t[1][1], t[2][1])), hi = bin(Math.max(t[0][1], t[1][1], t[2][1]));
+    for (let b = lo; b <= hi; b++) (bins[b] ||= []).push(pre[i]);
+  });
   return (o, d, maxT) => {
     let best = maxT;
-    for (const t of pre) {
+    const ya = o[1], yb = o[1] + d[1] * maxT;
+    const b0 = Math.max(0, bin(Math.min(ya, yb))), b1 = Math.min(bins.length - 1, bin(Math.max(ya, yb)));
+    for (let b = b0; b <= b1; b++) for (const t of bins[b] || []) {
       const p = cross(d, t.e2), det = dot(t.e1, p);
       if (Math.abs(det) < 1e-12) continue;
       const inv = 1 / det, s = sub(o, t.a), u = dot(s, p) * inv;
@@ -81,8 +133,8 @@ let ctrl = [
   [0.87, fx, PY - AR, PZ + 0.002],
   [0.94, fx, gy + 0.027, ankle[2] + 0.100],
   [1.00, fx, gy + 0.018, toeTipZ - 0.070],
-  [1.05, fx, gy + 0.013, toeTipZ - 0.028],
-  [LEG_LEN, fx, gy + 0.011, toeTipZ - 0.003],
+  [1.05, fx, gy + 0.013, toeTipZ - 0.031],
+  [LEG_LEN, fx, gy + 0.011, toeTipZ - 0.008],
 ];
 function sampleTable(table, s) {
   const n = table.length, cols = table[0].length - 1, out = new Array(cols);
@@ -137,27 +189,48 @@ for (let iter = 0; iter < 2; iter++) { // 把脊线移到截面中心（两端�
   }
   C = nc; castLeg();
 }
-// 脚趾：射线会钻进趾缝，改用截面附近顶点的包围范围拟合超椭圆（袜尖/鞋头本来就是包住脚趾的）
-const footVerts = [...new Set(tris.flat())].filter((p) => p[0] > 0 && p[1] < gy + 0.09);
+// 脚趾：射线会钻进趾缝，改用前脚掌三维凸包的截面（袜尖/鞋头本来就是绷在脚趾外面、横跨各趾的）。
+// 仍然从脊线出发按同样的角度取点，所以和前面射线求交的部分能无缝衔接
+const TOE_S0 = 0.925, toeJ0 = S.findIndex((s) => s >= TOE_S0);
+const toeT0 = norm(sub(C[toeJ0 + 1], C[toeJ0 - 1]));
+const footVerts = bodyP.filter((p) => p[0] > 0 && p[1] < gy + 0.09 && dot(sub(p, C[toeJ0]), toeT0) > -0.004)
+  .filter((_, i, a) => i % Math.ceil(a.length / 1500) === 0);
+console.log('forefoot hull points', footVerts.length);
+function hull2(pts) { // Andrew 单调链，逆时针
+  pts.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+  const cr = (o, a, b) => (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]), h = [];
+  for (const p of pts) { while (h.length >= 2 && cr(h[h.length - 2], h[h.length - 1], p) <= 0) h.pop(); h.push(p); }
+  const lo = h.length + 1;
+  for (let i = pts.length - 2; i >= 0; i--) { const p = pts[i]; while (h.length >= lo && cr(h[h.length - 2], h[h.length - 1], p) <= 0) h.pop(); h.push(p); }
+  h.pop(); return h;
+}
 let lastRing = null;
 for (let j = 0; j < NV; j++) {
-  const w = smooth(0.925, 0.985, S[j]); if (w === 0) continue;
+  const w = smooth(TOE_S0, 0.985, S[j]); if (w === 0) continue;
   const T = norm(sub(C[Math.min(j + 1, NV - 1)], C[Math.max(j - 1, 0)]));
   const X = norm(sub([1, 0, 0], [T[0] * T[0], T[1] * T[0], T[2] * T[0]])), F = cross(T, X);
-  let x0 = 1e9, x1 = -1e9, f0 = 1e9, f1 = -1e9, n = 0;
+  // 凸包在该截面上的轮廓 = 截面两侧任意两点连线与截面交点的二维凸包
+  const sec = [], back = [], front = [];
   for (const v of footVerts) {
-    const dv = sub(v, C[j]); if (Math.abs(dot(dv, T)) > 0.006) continue;
-    const px = dot(dv, X), pf = dot(dv, F); n++;
-    x0 = Math.min(x0, px); x1 = Math.max(x1, px); f0 = Math.min(f0, pf); f1 = Math.max(f1, pf);
+    const dv = sub(v, C[j]), t = dot(dv, T), q = [dot(dv, X), dot(dv, F), t];
+    if (Math.abs(t) < 0.0015) sec.push(q); else (t < 0 ? back : front).push(q);
   }
+  for (const p of back) for (const q of front) { const u = p[2] / (p[2] - q[2]); sec.push([p[0] + (q[0] - p[0]) * u, p[1] + (q[1] - p[1]) * u]); }
+  const h = sec.length >= 12 ? hull2(sec) : [];
+  const inside = h.length >= 3 && h.every((p, i) => { const q = h[(i + 1) % h.length]; return p[0] * q[1] - p[1] * q[0] > 1e-9; });
   let ringPts;
-  if (n >= 6) {
-    const cx = (x0 + x1) / 2, cf = (f0 + f1) / 2, ax = (x1 - x0) / 2, af = (f1 - f0) / 2;
+  if (inside) {
     ringPts = [];
     for (let i = 0; i < NU; i++) {
-      const th = i / NU * Math.PI * 2, c = Math.cos(th), sn = Math.sin(th), e = 2 / 2.2;
-      const sx = Math.sign(c) * Math.abs(c) ** e, sf = Math.sign(sn) * Math.abs(sn) ** e;
-      ringPts.push(add(add(C[j], X, cx + ax * sx), F, cf + af * sf));
+      const th = i / NU * Math.PI * 2, c = Math.cos(th), sn = Math.sin(th);
+      let t = 0;
+      for (let e = 0; e < h.length; e++) { // 从脊线出发的射线与凸包边求交
+        const p = h[e], q = h[(e + 1) % h.length], ex = q[0] - p[0], ey = q[1] - p[1], den = c * ey - sn * ex;
+        if (den < 1e-12) continue;
+        const tt = (p[0] * ey - p[1] * ex) / den, u = Math.abs(ex) > Math.abs(ey) ? (tt * c - p[0]) / ex : (tt * sn - p[1]) / ey;
+        if (u >= -1e-6 && u <= 1 + 1e-6) t = Math.max(t, tt);
+      }
+      ringPts.push(add(add(C[j], X, t * c), F, t * sn));
     }
     lastRing = { j, ringPts };
   } else if (lastRing) {
@@ -178,10 +251,14 @@ for (let pass = 0; pass < 6; pass++) {
     }
   }
 }
-// 末端收口
-for (let i = 0; i < NU; i++) for (let k = 0; k < 3; k++) {
-  const a = ((NV - 1) * NU + i) * 3 + k;
-  grid[a] = C[NV - 1][k] + (grid[a] - C[NV - 1][k]) * 0.15;
+// 末端收口：最后几行向各自截面的中心收成圆顶，末行几乎并成一点（不留孔）
+for (let r = 0; r < 6; r++) {
+  const j = NV - 1 - r, u = 1 - r / 6, sc = Math.max(0.02, Math.sqrt(1 - u * u)), m = [0, 0, 0];
+  for (let i = 0; i < NU; i++) for (let k = 0; k < 3; k++) m[k] += grid[(j * NU + i) * 3 + k] / NU;
+  for (let i = 0; i < NU; i++) for (let k = 0; k < 3; k++) {
+    const a = (j * NU + i) * 3 + k;
+    grid[a] = m[k] + (grid[a] - m[k]) * sc;
+  }
 }
 
 // ---------------------------------------------------------------- 站姿：把分开的腿收拢，再把脚掌转回水平
@@ -261,11 +338,10 @@ for (let y = torsoTop; y > waistY - 0.031; y -= (torsoTop - waistY + 0.032) / 24
 torsoRows.push(ring(waistY - 0.032));
 
 // ---------------------------------------------------------------- 输出
-const Q = 20000; // 0.05mm 量化
-const b64 = (arr) => { const q = new Int16Array(arr.length); for (let i = 0; i < arr.length; i++) q[i] = Math.round(arr[i] * Q); return Buffer.from(q.buffer).toString('base64'); };
+const b64 = (arr) => Buffer.from(Float32Array.from(arr).buffer).toString('base64'); // Float32：量化会在法线里留下噪声（袜尖的小圈尤其明显）
 const r5 = (x) => +x.toFixed(5);
 const out = {
-  NU, NV, Q, legLen: LEG_LEN, kneeS: KNEE_S, ankleS: ANKLE_S,
+  NU, NV, legLen: LEG_LEN, kneeS: KNEE_S, ankleS: ANKLE_S,
   hipX: r5(hip[0]), knee: kneeL.map(r5), ankle: ankleL.map(r5), ball: ballL.map(r5), ballS: r5(S[ballJ]),
   restMinY: r5(minY), crotchY: r5(crotchY),
   waist: { y: r5(waist.y), a: r5(waist.a), b: r5(waist.b), zc: r5(wzc), ring: waistRing.map(r5) },
@@ -275,5 +351,5 @@ const out = {
   rest: b64(rest), spine: b64(spine),
 };
 fs.writeFileSync(path.join(ROOT, 'src/bodydata.js'),
-  '// 由 tools/fit-body.mjs 从 MakeHuman 基础网格（CC0）生成，请勿手改\nexport const BODY = ' + JSON.stringify(out) + ';\n');
+  '// 由 tools/fit-body.mjs 从 MakeHuman 基础网格（CC0，细分后）生成，请勿手改\nexport const BODY = ' + JSON.stringify(out) + ';\n');
 console.log('wrote src/bodydata.js', (fs.statSync(path.join(ROOT, 'src/bodydata.js')).size / 1024).toFixed(0) + 'KB');

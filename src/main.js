@@ -236,6 +236,16 @@ function updateShoes() {
         }
       }
     }
+    // 抹平会让鞋头向内收缩，这里保证鞋面始终在脚的外侧
+    for (let k = TOE_J0 * NU * 3; k < p.length; k += 3) {
+      const d = (p[k] - lp[off + k]) * ln[off + k] + (p[k + 1] - lp[off + k + 1]) * ln[off + k + 1] + (p[k + 2] - lp[off + k + 2]) * ln[off + k + 2];
+      if (d < 0.003) { const e = 0.003 - d; p[k] += ln[off + k] * e; p[k + 1] += ln[off + k + 1] * e; p[k + 2] += ln[off + k + 2] * e; }
+    }
+    { // 鞋尖：末行向中心收拢，不留开口
+      const o = (SHOE_ROWS - 1) * NU * 3, m = [0, 0, 0];
+      for (let i = 0; i < NU; i++) for (let c = 0; c < 3; c++) m[c] += p[o + i * 3 + c] / NU;
+      for (let i = 0; i < NU; i++) for (let c = 0; c < 3; c++) p[o + i * 3 + c] = m[c] + (p[o + i * 3 + c] - m[c]) * 0.12;
+    }
     gridNormals(p, sh.nrm, NU, SHOE_ROWS);
     if (sh.leg.side < 0) for (let k = 0; k < sh.nrm.length; k++) sh.nrm[k] = -sh.nrm[k];
     sh.mesh.geometry.attributes.position.needsUpdate = true;

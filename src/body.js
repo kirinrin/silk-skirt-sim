@@ -69,9 +69,7 @@ import { BODY } from './bodydata.js';
 function decode(b64) {
   const bin = atob(b64), u8 = new Uint8Array(bin.length);
   for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i);
-  const q = new Int16Array(u8.buffer), f = new Float32Array(q.length);
-  for (let i = 0; i < q.length; i++) f[i] = q[i] / BODY.Q;
-  return f;
+  return new Float32Array(u8.buffer);
 }
 export const NU = BODY.NU, NV = BODY.NV;
 export const HIP_X = BODY.hipX, KNEE_S = BODY.kneeS, ANKLE_S = BODY.ankleS, LEG_LEN = BODY.legLen;
