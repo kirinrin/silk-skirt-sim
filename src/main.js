@@ -513,6 +513,7 @@ function applyLook() {
 // ------------------------------------------------------------------ 面板
 const gui = new GUI({ title: '参数' });
 gui.add(P, 'look', ['写实', '动画']).name('渲染风格').onChange(applyLook);
+gui.add(P, 'shoes').name('穿鞋子');
 const fS = gui.addFolder('丝袜');
 fS.add(P, 'stockOn').name('穿着丝袜').onChange(applyStocking);
 fS.add(P, 'style', Object.keys(STYLES)).name('款式').onChange(applyStocking);
@@ -543,7 +544,6 @@ fA.add(P, 'idle').name('待机屈膝');
 fA.add({ f: () => { act.spin = act.sway = act.jump = null; yawBase = 0; updatePose(0); skirt.reset(root); } }, 'f').name('复位');
 const fB = gui.addFolder('身体');
 fB.addColor(P, 'skin').name('肤色').onChange((v) => { skinMat.color.set(v); toon.skin.color.set(v); applyStocking(); });
-fB.add(P, 'shoes').name('乐福鞋');
 fB.close();
 
 function rebuildSkirt() { skirt.build({ pleats: P.pleats, length: P.length }, root); }
