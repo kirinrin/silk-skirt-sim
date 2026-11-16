@@ -113,7 +113,8 @@ function makeCaster(list) {
 const legCast = makeCaster(tris.filter((t) => t.some((p) => p[0] > -0.02) && t.some((p) => p[1] < 0.12)));
 
 // ---------------------------------------------------------------- 腿的脊线
-const toeTipZ = Math.max(...tris.flat().filter((p) => p[0] > 0 && p[1] < gy + 0.06).map((p) => p[2]));
+const toeTip = bodyP.filter((p) => p[0] > 0 && p[1] < gy + 0.06).reduce((a, p) => (p[2] > a[2] ? p : a));  // 最前面的趾尖
+const toeTipZ = toeTip[2];
 const lerp3 = (a, b, t) => [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t];
 const fx = ankle[0] - 0.006;
 // 脚踝处脊线走一段圆弧（圆心在脚背折痕处），避免截面在脚背内侧互相交叉
@@ -133,8 +134,8 @@ let ctrl = [
   [0.87, fx, PY - AR, PZ + 0.002],
   [0.94, fx, gy + 0.027, ankle[2] + 0.100],
   [1.00, fx, gy + 0.018, toeTipZ - 0.070],
-  [1.05, fx, gy + 0.013, toeTipZ - 0.031],
-  [LEG_LEN, fx, gy + 0.011, toeTipZ - 0.008],
+  [1.05, fx + (toeTip[0] - fx) * 0.6, gy + 0.013, toeTipZ - 0.026],
+  [LEG_LEN, toeTip[0], toeTip[1], toeTipZ + 0.0015],   // 脊线伸过趾尖一点：最后一圈有效截面之后再收口，袜尖才能包住真实的脚趾
 ];
 function sampleTable(table, s) {
   const n = table.length, cols = table[0].length - 1, out = new Array(cols);
@@ -234,7 +235,7 @@ for (let j = 0; j < NV; j++) {
     }
     lastRing = { j, ringPts };
   } else if (lastRing) {
-    const k = Math.max(0.1, 1 - (j - lastRing.j) * 0.3);
+    const k = Math.max(0.1, 1 - (j - lastRing.j) * 0.12);
     const m = [0, 0, 0]; for (const p of lastRing.ringPts) for (let q = 0; q < 3; q++) m[q] += p[q] / NU;
     ringPts = lastRing.ringPts.map((p) => add(lerp3(m, p, k), sub(C[j], C[lastRing.j])));
   } else continue;
@@ -244,21 +245,72 @@ for (let j = 0; j < NV; j++) {
 for (let pass = 0; pass < 6; pass++) {
   const cp = grid.slice();
   for (let j = 1; j < NV - 1; j++) {
-    const w = smooth(0.90, 0.96, S[j]) * 0.7 + 0.08;
+    const w = smooth(0.90, 0.95, S[j]) * (1 - smooth(0.97, 1.0, S[j])) * 0.4 + 0.06;   // 只在射线求交过渡到凸包的那一段多抹一些；再往前是凸包，抹多了会缩进脚趾里
     for (let i = 0; i < NU; i++) for (let k = 0; k < 3; k++) {
       const a = (j * NU + i) * 3 + k, l = (j * NU + (i + 1) % NU) * 3 + k, r = (j * NU + (i + NU - 1) % NU) * 3 + k;
       grid[a] = cp[a] * (1 - w) + w * (cp[l] + cp[r] + cp[a - NU * 3] + cp[a + NU * 3]) / 4;
     }
   }
 }
-// 末端收口：最后几行向各自截面的中心收成圆顶，末行几乎并成一点（不留孔）
-for (let r = 0; r < 6; r++) {
-  const j = NV - 1 - r, u = 1 - r / 6, sc = Math.max(0.02, Math.sqrt(1 - u * u)), m = [0, 0, 0];
-  for (let i = 0; i < NU; i++) for (let k = 0; k < 3; k++) m[k] += grid[(j * NU + i) * 3 + k] / NU;
-  for (let i = 0; i < NU; i++) for (let k = 0; k < 3; k++) {
-    const a = (j * NU + i) * 3 + k;
-    grid[a] = m[k] + (grid[a] - m[k]) * sc;
+// 袜尖：凸包的棱角抹圆一点再整体放出来（丝袜绷在脚趾上是圆润的），最后两行收成圆顶，末行并成一点
+for (let pass = 0; pass < 4; pass++) {
+  const cp = grid.slice();
+  for (let j = 1; j < NV - 1; j++) {
+    const w = 0.5 * smooth(0.975, 1.0, S[j]); if (w === 0) continue;
+    for (let i = 0; i < NU; i++) for (let k = 0; k < 3; k++) {
+      const a = (j * NU + i) * 3 + k, l = (j * NU + (i + 1) % NU) * 3 + k, r = (j * NU + (i + NU - 1) % NU) * 3 + k;
+      grid[a] = cp[a] * (1 - w) + w * (cp[l] + cp[r]) / 2;
+    }
   }
+}
+for (let j = 0; j < NV; j++) {
+  const sc = j === NV - 1 ? 0.05 : j === NV - 2 ? 0.82 : 1 + 0.035 * smooth(0.93, 1.0, S[j]), m = [0, 0, 0];
+  if (sc === 1) continue;
+  for (let i = 0; i < NU; i++) for (let k = 0; k < 3; k++) m[k] += grid[(j * NU + i) * 3 + k] / NU;
+  for (let i = 0; i < NU; i++) for (let k = 0; k < 3; k++) { const a = (j * NU + i) * 3 + k; grid[a] = m[k] + (grid[a] - m[k]) * sc; }
+}
+
+// ---------------------------------------------------------------- 真实的前脚掌（分开的脚趾）
+// 规则网格在脚趾处只是一个“袜尖”形状。这里把细分网格的前脚掌原样导出，运行时作为皮肤显示，丝袜仍用规则网格绷在外面。
+// 导出的顶点被限制在规则网格表面以内一点，保证不会从丝袜里穿出来
+const toeJ = S.findIndex((s) => s >= 0.84);
+const nearRow = (p) => { let bj = toeJ, bd = 1e9; for (let j = toeJ; j < NV; j++) { const d = Math.hypot(...sub(p, C[j])); if (d < bd) { bd = d; bj = j; } } return bj; };
+const ringFrame = (j) => { const T = norm(sub(C[Math.min(j + 1, NV - 1)], C[Math.max(j - 1, 0)])), X = norm(sub([1, 0, 0], [T[0] * T[0], T[1] * T[0], T[2] * T[0]])); return [T, X, cross(T, X)]; };
+const ringPolar = S.map((_, j) => {
+  if (j < toeJ) return null;
+  const [, X, F] = ringFrame(j), out = [];
+  for (let i = 0; i < NU; i++) { const k = (j * NU + i) * 3, dv = sub([grid[k], grid[k + 1], grid[k + 2]], C[j]), x = dot(dv, X), f = dot(dv, F); out.push([Math.atan2(f, x), Math.hypot(x, f)]); }
+  return out.sort((a, b) => a[0] - b[0]);
+});
+const ringR = (j, ang) => {
+  const r = ringPolar[j], n = r.length; let i = 0; while (i < n && r[i][0] < ang) i++;
+  const a = r[(i + n - 1) % n], b = r[i % n]; let da = b[0] - a[0], dq = ang - a[0];
+  if (da <= 0) da += Math.PI * 2; if (dq < 0) dq += Math.PI * 2;
+  return a[1] + (b[1] - a[1]) * Math.min(1, dq / da);
+};
+const toe = { pos: [], idx: [] };
+{
+  const isFoot = (p) => p[0] > 0 && p[1] < gy + 0.09, row = new Map(), id = new Map();
+  const rowOf = (i) => { let r = row.get(i); if (r === undefined) row.set(i, r = nearRow(bodyP[i])); return r; };
+  const cutJ = S.findIndex((s) => s >= 0.895);
+  for (const f of bodyF) {
+    if (!f.every((i) => isFoot(bodyP[i])) || !f.some((i) => rowOf(i) >= cutJ)) continue;
+    const m = f.map((i) => { let v = id.get(i); if (v === undefined) { id.set(i, v = toe.pos.length); toe.pos.push(bodyP[i].slice()); } return v; });
+    for (let k = 1; k < m.length - 1; k++) toe.idx.push(m[0], m[k], m[k + 1]);
+  }
+  let moved = 0, maxPull = 0; const pj0 = S.findIndex((s) => s >= 0.88);
+  for (const p of toe.pos) {
+    let j = pj0, bt = 1e9;   // 顶点所在的截面：到截面平面距离最小的一行
+    for (let q = pj0; q < NV; q++) { const d = Math.abs(dot(sub(p, C[q]), ringFrame(q)[0])); if (d < bt) { bt = d; j = q; } }
+    const [T, X, F] = ringFrame(j), dv = sub(p, C[j]), t = dot(dv, T), x = dot(dv, X), f = dot(dv, F), rl = Math.hypot(x, f);
+    if (rl < 1e-6) continue;
+    const ang = Math.atan2(f, x), jn = t > 0 ? Math.min(j + 1, NV - 1) : Math.max(j - 1, toeJ);
+    const w = jn === j ? 0 : Math.min(1, Math.abs(t) / (Math.hypot(...sub(C[jn], C[j])) || 1));
+    const R = ringR(j, ang) * (1 - w) + ringR(jn, ang) * w - 0.0004;
+    if (rl - R > 0.003 && process.env.DBG) console.log('pull', ((rl - R) * 1000).toFixed(1), 's', S[j].toFixed(3), 'j', j, 'jn', jn, 't', (t*1000).toFixed(1), 'rl', (rl*1000).toFixed(1), 'R', (R*1000).toFixed(1), 'p', p.map((v) => v.toFixed(3)).join(' '));
+    if (rl > R) { const e = (R - rl) / rl; for (let k = 0; k < 3; k++) p[k] += (X[k] * x + F[k] * f) * e; moved++; maxPull = Math.max(maxPull, rl - R); }
+  }
+  console.log('forefoot mesh', toe.pos.length, 'verts', toe.idx.length / 3, 'tris; pulled inside', moved, 'max', (maxPull * 1000).toFixed(2) + 'mm');
 }
 
 // ---------------------------------------------------------------- 站姿：把分开的腿收拢，再把脚掌转回水平
@@ -283,6 +335,7 @@ for (let j = 0; j < NV; j++) {
   spine.set([...c, ...Fv[j]], j * 6);
 }
 const jl = (p, s) => stance(p, s, anklePiv);
+const toePos = toe.pos.map((p) => stance(p, 1, anklePiv)).flat();   // 前脚掌整体在两处过渡区之后，是一次刚性变换
 const kneeL = jl(knee, KNEE_S), ankleL = jl(ankle, ANKLE_S);
 const ballJ = S.findIndex((s) => s >= 0.985), ballL = [spine[ballJ * 6], spine[ballJ * 6 + 1], spine[ballJ * 6 + 2]];
 let minY = 1e9; for (let k = 1; k < rest.length; k += 3) minY = Math.min(minY, rest[k]);
@@ -349,6 +402,7 @@ const out = {
   pelvis: { nu: PNU, nv: pelvisRows.length, pos: b64(pelvisRows.flat(2)) },
   torso: { nu: PNU, nv: torsoRows.length, pos: b64(torsoRows.flat(2)) },
   rest: b64(rest), spine: b64(spine),
+  toes: { pos: b64(toePos), idx: Buffer.from(Uint16Array.from(toe.idx).buffer).toString('base64') },
 };
 fs.writeFileSync(path.join(ROOT, 'src/bodydata.js'),
   '// 由 tools/fit-body.mjs 从 MakeHuman 基础网格（CC0，细分后）生成，请勿手改\nexport const BODY = ' + JSON.stringify(out) + ';\n');

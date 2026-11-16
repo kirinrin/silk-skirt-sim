@@ -3,7 +3,7 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { makeStudioEnv } from './studio.js';
 import GUI from 'lil-gui';
 import {
-  Leg, NU, NV, SUV, S_ROW, REST, rowOfS, smooth,
+  Leg, NU, NV, SUV, S_ROW, REST, rowOfS, smooth, TOE_CUT, TOE_POS, TOE_INDEX, TOE_S,
   buildTorso, buildColliders,
   gridNormals,
 } from './body.js';
@@ -85,12 +85,45 @@ const skinMeshes = legs.map((leg) => {
   g.setAttribute('color', new THREE.BufferAttribute(legColors, 3));
   g.setAttribute('aSUV', new THREE.BufferAttribute(SUV, 3));
   g.setIndex(new THREE.BufferAttribute(leg.index, 1));
+  g.setDrawRange(0, TOE_CUT * NU * 6);   // 再往前由真实的脚趾网格接上
   g.boundingSphere = new THREE.Sphere(new THREE.Vector3(0, 0.6, 0), 5);
   const m = new THREE.Mesh(g, skinMat);
   m.frustumCulled = false; m.castShadow = true; m.receiveShadow = true;
   scene.add(m);
   return m;
 });
+
+// 脚趾：真实的前脚掌网格，随腿蒙皮
+const TOE_N = TOE_S.length;
+const toeMeshes = legs.map((leg) => {
+  const pos = new Float32Array(TOE_N * 3), col = new Float32Array(TOE_N * 3).fill(1), suv = new Float32Array(TOE_N * 3);
+  for (let a = 0; a < TOE_N; a++) { suv[a * 3 + 1] = 1; suv[a * 3 + 2] = TOE_S[a]; }
+  const idx = TOE_INDEX.slice();
+  if (leg.side < 0) for (let k = 0; k < idx.length; k += 3) { const x = idx[k + 1]; idx[k + 1] = idx[k + 2]; idx[k + 2] = x; }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.BufferAttribute(pos, 3).setUsage(THREE.DynamicDrawUsage));
+  g.setAttribute('normal', new THREE.BufferAttribute(new Float32Array(TOE_N * 3), 3).setUsage(THREE.DynamicDrawUsage));
+  g.setAttribute('color', new THREE.BufferAttribute(col, 3));
+  g.setAttribute('aSUV', new THREE.BufferAttribute(suv, 3));
+  g.setIndex(new THREE.BufferAttribute(idx, 1));
+  g.boundingSphere = new THREE.Sphere(new THREE.Vector3(0, 0.2, 0), 5);
+  const m = new THREE.Mesh(g, skinMat);
+  m.frustumCulled = false; m.castShadow = true; m.receiveShadow = true;
+  scene.add(m);
+  return { leg, mesh: m, pos };
+});
+function updateToes() {
+  const c = Math.cos(root.yaw), s = Math.sin(root.yaw), t = [0, 0, 0];
+  for (const tm of toeMeshes) {
+    const p = tm.pos, leg = tm.leg;
+    for (let a = 0, k = 0; a < TOE_N; a++, k += 3) {
+      leg.skin(TOE_POS[k], TOE_POS[k + 1], TOE_POS[k + 2], TOE_S[a], t);
+      p[k] = t[0] * c + t[2] * s + root.x; p[k + 1] = t[1] + root.y; p[k + 2] = -t[0] * s + t[2] * c + root.z;
+    }
+    tm.mesh.geometry.attributes.position.needsUpdate = true;
+    tm.mesh.geometry.computeVertexNormals();
+  }
+}
 
 const bodyGroup = new THREE.Group(); scene.add(bodyGroup);
 const torso = buildTorso();
@@ -186,12 +219,12 @@ let SOLE_REST, SOLE_S, SOLE_INDEX, SHOE_DROP = 0;
   const p = SHOE_REST, off = SHOE_J0 * NU * 3, TOE_J0 = rowOfS(0.93) - SHOE_J0, y0 = BODY.restMinY;
   const win = (a, b, c, d, x) => smooth(a, b, x) * (1 - smooth(c, d, x));
   for (let j = 0; j < SHOE_ROWS; j++) {
-    const s = S_ROW[SHOE_J0 + j], o = 0.0036 + 0.004 * smooth(0.92, 0.99, s);
+    const s = S_ROW[SHOE_J0 + j], o = 0.0036 + 0.0055 * smooth(0.92, 0.99, s);
     for (let k = j * NU * 3; k < (j + 1) * NU * 3; k++) p[k] = REST[off + k] + rn[off + k] * o;
   }
   // 鞋头：把脚趾的起伏抹平成光滑的鞋面
   const tmp = new Float32Array(p.length);
-  for (let pass = 0; pass < 16; pass++) {
+  for (let pass = 0; pass < 40; pass++) {
     tmp.set(p);
     for (let j = TOE_J0; j < SHOE_ROWS - 1; j++) {
       const w = 0.9 * smooth(0.93, 0.975, S_ROW[SHOE_J0 + j]);
@@ -207,23 +240,40 @@ let SOLE_REST, SOLE_S, SOLE_INDEX, SHOE_DROP = 0;
     const d = (p[k] - REST[off + k]) * rn[off + k] + (p[k + 1] - REST[off + k + 1]) * rn[off + k + 1] + (p[k + 2] - REST[off + k + 2]) * rn[off + k + 2];
     if (d < 0.003) { const e = 0.003 - d; p[k] += rn[off + k] * e; p[k + 1] += rn[off + k + 1] * e; p[k + 2] += rn[off + k + 2] * e; }
   }
-  { // 鞋尖：末行向中心收拢，不留开口
-    const o = (SHOE_ROWS - 1) * NU * 3, m = [0, 0, 0];
-    for (let i = 0; i < NU; i++) for (let c = 0; c < 3; c++) m[c] += p[o + i * 3 + c] / NU;
-    for (let i = 0; i < NU; i++) for (let c = 0; c < 3; c++) p[o + i * 3 + c] = m[c] + (p[o + i * 3 + c] - m[c]) * 0.12;
-  }
   let z0 = 1e9, z1 = -1e9;
   for (let k = 2; k < p.length; k += 3) { if (p[k] < z0) z0 = p[k]; if (p[k] > z1) z1 = p[k]; }
   const rowW = (j) => { let cx = 0, w = 0; for (let i = 0; i < NU; i++) cx += p[(j * NU + i) * 3] / NU; for (let i = 0; i < NU; i++) w = Math.max(w, Math.abs(p[(j * NU + i) * 3] - cx)); return [cx, w]; };
-  { // 圆鞋头：脚尖是尖的，把鞋头每一行的宽度撑到一条圆润的轮廓上
-    const U0 = 0.66, rowU = (j) => { let z = 0; for (let i = 0; i < NU; i++) z += p[(j * NU + i) * 3 + 2] / NU; return (z - z0) / (z1 - z0); };
-    let W = 0; for (let j = 0; j < SHOE_ROWS; j++) if (Math.abs(rowU(j) - U0) < 0.03) W = Math.max(W, rowW(j)[1]);
-    for (let j = 0; j < SHOE_ROWS; j++) {
-      const u = rowU(j); if (u <= U0) continue;
-      const [cx, w] = rowW(j), e = Math.min((u - U0) / (1.02 - U0), 1), target = W * Math.sqrt(Math.max(1 - e * e, 0));
-      const f = Math.min(Math.max(target / Math.max(w, 1e-4), 1), 3);
-      for (let i = 0; i < NU; i++) { const k = (j * NU + i) * 3; p[k] = cx + (p[k] - cx) * f; }
+  { // 鞋头：不跟着脚趾的形状走（脚尖是斜的、网格在趾尖汇成一点），而是把前掌处的一圈截面
+    // 沿鞋长按楦型曲线逐渐收小，放样出一个圆润的鞋头
+    const U0 = 0.66, zc = z0 + (z1 - z0) * U0, y0 = BODY.restMinY;
+    let jb = 0; for (let j = 0; j < SHOE_ROWS; j++) { let z = 0; for (let i = 0; i < NU; i++) z += p[(j * NU + i) * 3 + 2] / NU; if (z < zc) jb = j + 1; }
+    const ob = jb * NU * 3, L = z1 - zc + 0.014, last = SHOE_ROWS - 1;
+    let xa = 1e9, xb = -1e9; for (let i = 0; i < NU; i++) { xa = Math.min(xa, p[ob + i * 3]); xb = Math.max(xb, p[ob + i * 3]); }
+    const cx = (xa + xb) / 2;
+    for (let j = jb + 1; j <= last; j++) {
+      const t = (j - jb) / (last - jb), e = Math.sin(t * Math.PI / 2) * 0.999;
+      const ws = Math.pow(1 - Math.pow(e, 2.3), 1 / 2.3), hs = Math.pow(1 - Math.pow(e, 2.6), 1 / 2.6) * (1 - 0.22 * e);
+      for (let i = 0; i < NU; i++) {
+        const k = (j * NU + i) * 3, b = ob + i * 3;
+        p[k] = cx + (p[b] - cx) * ws; p[k + 1] = y0 + (p[b + 1] - y0) * hs; p[k + 2] = zc + (p[b + 2] - zc) * (1 - e) + L * e;
+      }
     }
+    // 放样出来的鞋头必须把脚（连同丝袜）包在里面：逐行检查，哪一行不够大就把那一行放大
+    const fac = new Float32Array(SHOE_ROWS).fill(1);
+    for (let j = jb + 1; j < last; j++) {
+      let zr = 0, yc = 0; for (let i = 0; i < NU; i++) { zr += p[(j * NU + i) * 3 + 2] / NU; yc += p[(j * NU + i) * 3 + 1] / NU; }
+      const ring = []; for (let i = 0; i < NU; i++) { const k = (j * NU + i) * 3; ring.push([Math.atan2(p[k + 1] - yc, p[k] - cx), Math.hypot(p[k] - cx, p[k + 1] - yc)]); }
+      ring.sort((a, b) => a[0] - b[0]);
+      const rad = (ang) => { let i = 0; while (i < NU && ring[i][0] < ang) i++; const a = ring[(i + NU - 1) % NU], b = ring[i % NU]; let da = b[0] - a[0], dq = ang - a[0]; if (da <= 0) da += Math.PI * 2; if (dq < 0) dq += Math.PI * 2; return a[1] + (b[1] - a[1]) * Math.min(1, dq / da); };
+      for (let k = off; k < REST.length; k += 3) {
+        if (Math.abs(REST[k + 2] - zr) > 0.004) continue;
+        const x = REST[k] + rn[k] * 0.001 - cx, y = REST[k + 1] + rn[k + 1] * 0.001 - yc;
+        fac[j] = Math.max(fac[j], (Math.hypot(x, y) + 0.0025) / rad(Math.atan2(y, x)));
+      }
+    }
+    for (let pass = 0; pass < 3; pass++) { const c = fac.slice(); for (let j = jb + 1; j < last; j++) fac[j] = pass === 0 ? Math.max(c[j - 1], c[j], c[j + 1]) : (c[j - 1] + 2 * c[j] + c[j + 1]) / 4; }
+    for (let j = jb + 1; j < last; j++) for (let i = 0; i < NU; i++) { const k = (j * NU + i) * 3; p[k] = cx + (p[k] - cx) * fac[j]; p[k + 1] = y0 + (p[k + 1] - y0) * fac[j]; }
+    z1 = -1e9; for (let k = 2; k < p.length; k += 3) if (p[k] > z1) z1 = p[k];
   }
   // 鞋口。u：沿脚长（0 = 脚跟后缘，1 = 鞋尖），v：横向，h：离脚底的高度
   const base = new THREE.Color(0x2c1215);
@@ -566,6 +616,7 @@ const outline = new OutlinePass(renderer);
 const woodFloor = makeWoodFloor(); scene.add(woodFloor);
 const looks = [
   ...skinMeshes.map((m) => [m, skinMat, toon.skin]),
+  ...toeMeshes.map((t) => [t.mesh, skinMat, toon.skin]),
   ...stockings.map((s) => [s.mesh, stockMat, toon.stock]),
   ...shoes.flatMap((sh) => [[sh.mesh, shoeMat, toon.shoe], [sh.sole, soleMat, toon.sole]]),
   ...shortLegs.map((sh) => [sh.mesh, shortsMat, toon.shorts]),
@@ -635,6 +686,7 @@ function simulate(dt) {
   skirt.step(dt, root, colliders, { ...P, windDir: P.windDir * Math.PI / 180 });
   skirt.updateMesh();
   for (const s of stockings) s.update(dt);
+  updateToes();
   updateShoes();
   updateShorts();
 }

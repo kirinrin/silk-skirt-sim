@@ -118,6 +118,20 @@ export const REST_LU = new Float32Array(N), REST_LV = new Float32Array(N);
 
 export const rowOfS = (s) => Math.round(s / LEG_LEN * (NV - 1));
 
+// 真实的前脚掌网格（分开的脚趾）：皮肤在这一段用它显示，规则网格只留给丝袜和鞋
+export const TOE_CUT = rowOfS(0.93);           // 规则网格的皮肤画到这一行为止
+export const TOE_POS = decode(BODY.toes.pos);
+export const TOE_INDEX = (() => { const bin = atob(BODY.toes.idx), u8 = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i); return new Uint16Array(u8.buffer); })();
+export const TOE_S = new Float32Array(TOE_POS.length / 3);   // 每个顶点蒙皮用的 s：最近的脊线点
+for (let a = 0, j0 = rowOfS(0.86); a < TOE_S.length; a++) {
+  let bj = j0, bd = 1e9;
+  for (let j = j0; j < NV; j++) {
+    const d = (TOE_POS[a * 3] - SPINE[j * 6]) ** 2 + (TOE_POS[a * 3 + 1] - SPINE[j * 6 + 1]) ** 2 + (TOE_POS[a * 3 + 2] - SPINE[j * 6 + 2]) ** 2;
+    if (d < bd) { bd = d; bj = j; }
+  }
+  TOE_S[a] = Math.max(S_ROW[bj], 0.9);
+}
+
 export class Leg {
   constructor(side) {
     this.side = side;             // +1: x>0   -1: x<0（镜像）
