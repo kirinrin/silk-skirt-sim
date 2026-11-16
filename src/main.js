@@ -545,9 +545,16 @@ function pick(e) {
   setRay(e);
   const objs = [skirt.mesh, ...skinMeshes];
   if (P.stockOn) objs.push(...stockings.map((s) => s.mesh));
+  if (P.shoes) for (const sh of shoes) objs.push(sh.mesh, sh.sole);
   const hits = ray.intersectObjects(objs, false);
   for (const h of hits) {
     if (h.object === skirt.mesh) return { type: 'skirt', hit: h };
+    const shoe = shoes.find((sh) => sh.mesh === h.object || sh.sole === h.object);
+    if (shoe) {
+      // 鞋不能被拉拽，也挡住鞋里面的丝袜；鞋面网格在鞋口以上的部分是被遮罩裁掉的，不算
+      if (h.object === shoe.sole || SHOE_SUV[h.face.a * 3] > 0 || SHOE_SUV[h.face.b * 3] > 0 || SHOE_SUV[h.face.c * 3] > 0) return null;
+      continue;
+    }
     const si = stockings.findIndex((s) => s.mesh === h.object);
     if (si >= 0) {
       if (S_ROW[Math.floor(h.face.a / NU)] < STYLES[P.style].top) continue; // 袜口以上
