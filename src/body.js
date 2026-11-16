@@ -128,6 +128,8 @@ export class Leg {
     this.loc = new Float32Array(N * 3);
     this.pos = new Float32Array(N * 3);
     this.nrm = new Float32Array(N * 3);
+    this.cenLoc = new Float32Array(NV * 3); // 每行截面中心（脊线），随蒙皮更新
+    this.cen = new Float32Array(NV * 3);
     this.minY = 0;
     this.kneeLocal = new THREE.Vector3();
     this.ankleLocal = new THREE.Vector3();
@@ -172,6 +174,7 @@ export class Leg {
       }
     }
     this.minY = minY;
+    for (let j = 0; j < NV; j++) { this.skin(SPINE[j * 6] , SPINE[j * 6 + 1], SPINE[j * 6 + 2], S_ROW[j], t); this.cenLoc.set(t, j * 3); }
     this.skin(KNEE[0], KNEE[1], KNEE[2], 0, t); this.kneeLocal.set(t[0], t[1], t[2]);
     const tj = rowOfS(0.07) * 6;
     this.skin(SPINE[tj], SPINE[tj + 1], SPINE[tj + 2], 0, t); this.thighLocal.set(t[0], t[1], t[2]);
@@ -189,6 +192,10 @@ export class Leg {
     }
     gridNormals(pos, nrm, NU, NV);
     if (this.side < 0) for (let k = 0; k < N * 3; k++) nrm[k] = -nrm[k];
+    const cl = this.cenLoc, cw = this.cen;
+    for (let k = 0; k < NV * 3; k += 3) {
+      cw[k] = cl[k] * c + cl[k + 2] * s + root.x; cw[k + 1] = cl[k + 1] + root.y; cw[k + 2] = -cl[k] * s + cl[k + 2] * c + root.z;
+    }
   }
 }
 

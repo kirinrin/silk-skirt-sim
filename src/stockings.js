@@ -1,7 +1,7 @@
 // 丝袜：薄纱材质（随视角/拉伸变化的透明度 + 针织纹理）与可捏起回弹的弹性薄膜模拟
 import * as THREE from 'three';
 import {
-  NU, NV, LEG_INDEX, SUV, S_ROW, R_ROW, REST_H, REST_V, REST_D1, REST_D2, REST_LU, REST_LV,
+  NU, NV, LEG_LEN, LEG_INDEX, SUV, S_ROW, R_ROW, REST_H, REST_V, REST_D1, REST_D2, REST_LU, REST_LV,
   gridNormals,
 } from './body.js';
 
@@ -12,6 +12,8 @@ const EPS_LAND = 0.00006;    // 重新贴回的阈值
 const SLIDE_FREE = 0.004;    // 离皮肤超过这个距离后才能自由横向滑动
 const WINDOW = 75;           // 仅模拟抓取点上下若干行
 const MAX_PULL = 0.24;       // 拉得太远会脱手弹回
+const PULL_CONE = 0.3;       // 横向拖动时附带的抬起量（相对横向位移的比例）
+const FLAP_CLEAR = 0.0012;   // 抬起的部分搭回腿上时，与贴肤那层保持的间距
 
 export const STYLES = {
   '连裤袜': { top: -1, band: 0 },
@@ -197,6 +199,9 @@ export class StockingLeg {
     this.stretch = new Float32Array(N * 3);
     this.lifted = new Uint8Array(N);
     this.fixed = new Uint8Array(N);
+    this.crow = new Int16Array(N);          // 每个顶点当前所在的腿截面行（碰撞用）
+    this.rowT = new Float32Array(NV * 9);   // 每行：轴向 T、截面内的两个基向量 e1 / e2
+    this.rowR = new Float32Array(N);        // 每行各角度处皮肤到脊线的距离
     this.active = false;
     this.grabIdx = -1;
     this.grabSet = [];
@@ -228,6 +233,7 @@ export class StockingLeg {
       this.grabSet.push((j + dj) * NU + (i + di + NU) % NU);
     }
     this.j0 = Math.max(0, j - WINDOW); this.j1 = Math.min(NV - 1, j + WINDOW);
+    for (const g of this.grabSet) this.crow[g] = Math.floor(g / NU);
     if (!this.active) { this.prev.set(this.pos); this.lifted.fill(0); }
     this.active = true;
     this.target.copy(target);
@@ -308,17 +314,66 @@ export class StockingLeg {
       const dx = this.target.x - home[g3], dy = this.target.y - home[g3 + 1], dz = this.target.z - home[g3 + 2];
       if (Math.sqrt((dx) ** 2 + (dy) ** 2 + (dz) ** 2) > MAX_PULL) { this.release(); this.onSnap && this.onSnap(); }
       else {
-        // 抓取点不能被按进腿里：把位移限制在抓取处皮肤切平面的外侧
-        const nd = dx * hn[g3] + dy * hn[g3 + 1] + dz * hn[g3 + 2], e = Math.max(0, 0.0015 - nd);
+        // 丝袜只能朝皮肤外侧被捏起：把位移限制在抓取处法线周围的锥内，横向拖动会附带一些抬起量。
+        // 往腿里拖（比如从腿的一侧拖向另一侧）时，贴肤的顶点只会被横向拉扯而抬不起来，
+        // 结果只有抓住的那一小块被扯成一条穿过腿，原处露出一个洞
+        const nd = dx * hn[g3] + dy * hn[g3 + 1] + dz * hn[g3 + 2];
+        const tl = Math.sqrt(Math.max(dx * dx + dy * dy + dz * dz - nd * nd, 0));
+        const e = Math.max(0, Math.max(0.0015, tl * PULL_CONE) - nd);
         gOff = [dx + hn[g3] * e, dy + hn[g3 + 1] * e, dz + hn[g3 + 2] * e];
         for (const g of this.grabSet) fixed[g] = 2;
       }
     }
+    // ---- 与腿表面的碰撞：每行截面相对脊线是星形的，按（行，角度）查表得到皮肤半径 ----
+    const lp = this.leg.pos, cen = this.leg.cen, rowT = this.rowT, rowR = this.rowR, crow = this.crow, Q = NU >> 2;
+    for (let j = 0; j < NV; j++) {
+      const ja = Math.max(j - 1, 0) * 3, jb = Math.min(j + 1, NV - 1) * 3, c = j * 3, o = j * 9;
+      let tx = cen[jb] - cen[ja], ty = cen[jb + 1] - cen[ja + 1], tz = cen[jb + 2] - cen[ja + 2];
+      const tl = Math.sqrt(tx * tx + ty * ty + tz * tz) || 1; tx /= tl; ty /= tl; tz /= tl;
+      for (let i = 0; i < NU; i++) {
+        const k = (j * NU + i) * 3, x = lp[k] - cen[c], y = lp[k + 1] - cen[c + 1], z = lp[k + 2] - cen[c + 2], t = x * tx + y * ty + z * tz;
+        rowR[j * NU + i] = Math.sqrt(Math.max(x * x + y * y + z * z - t * t, 0));
+      }
+      const k0 = j * NU * 3, kq = (j * NU + Q) * 3;
+      let ax = lp[k0] - cen[c], ay = lp[k0 + 1] - cen[c + 1], az = lp[k0 + 2] - cen[c + 2];
+      const at = ax * tx + ay * ty + az * tz; ax -= tx * at; ay -= ty * at; az -= tz * at;
+      const al = Math.sqrt(ax * ax + ay * ay + az * az) || 1; ax /= al; ay /= al; az /= al;
+      let bx = ty * az - tz * ay, by = tz * ax - tx * az, bz = tx * ay - ty * ax;
+      if (bx * (lp[kq] - cen[c]) + by * (lp[kq + 1] - cen[c + 1]) + bz * (lp[kq + 2] - cen[c + 2]) < 0) { bx = -bx; by = -by; bz = -bz; } // 镜像腿
+      rowT[o] = tx; rowT[o + 1] = ty; rowT[o + 2] = tz; rowT[o + 3] = ax; rowT[o + 4] = ay; rowT[o + 5] = az; rowT[o + 6] = bx; rowT[o + 7] = by; rowT[o + 8] = bz;
+    }
+    const ROW_H = LEG_LEN / (NV - 1);
+    const sn = [0, 0, 0];
+    const surf = (a, clear) => { // 返回离皮肤的间隙（在皮肤以下则推回表面），sn 为该处向外的方向
+      const k = a * 3;
+      let jr = crow[a], t = 0, o = 0, c = 0, x = 0, y = 0, z = 0;
+      for (let n = 0; n < 12; n++) {
+        o = jr * 9; c = jr * 3;
+        x = pos[k] - cen[c]; y = pos[k + 1] - cen[c + 1]; z = pos[k + 2] - cen[c + 2];
+        t = x * rowT[o] + y * rowT[o + 1] + z * rowT[o + 2];
+        if (t > ROW_H * 0.6 && jr < NV - 1) jr++; else if (t < -ROW_H * 0.6 && jr > 0) jr--; else break;
+      }
+      crow[a] = jr;
+      x -= rowT[o] * t; y -= rowT[o + 1] * t; z -= rowT[o + 2] * t;
+      const rl = Math.sqrt(x * x + y * y + z * z);
+      if (rl < 1e-6) { sn[0] = sn[1] = sn[2] = 0; return 1; }
+      sn[0] = x / rl; sn[1] = y / rl; sn[2] = z / rl;
+      let f = Math.atan2(x * rowT[o + 6] + y * rowT[o + 7] + z * rowT[o + 8], x * rowT[o + 3] + y * rowT[o + 4] + z * rowT[o + 5]) / (Math.PI * 2) * NU;
+      if (f < 0) f += NU;
+      const i0 = Math.floor(f) % NU, i1 = (i0 + 1) % NU, fr = f - Math.floor(f);
+      let R = rowR[jr * NU + i0] * (1 - fr) + rowR[jr * NU + i1] * fr;
+      const jn = t > 0 ? Math.min(jr + 1, NV - 1) : Math.max(jr - 1, 0), w = Math.min(Math.abs(t) / ROW_H, 1);
+      R += ((rowR[jn * NU + i0] * (1 - fr) + rowR[jn * NU + i1] * fr) - R) * w;
+      let gap = rl - R - OFFSET - clear;
+      if (gap < 0) { pos[k] -= sn[0] * gap; pos[k + 1] -= sn[1] * gap; pos[k + 2] -= sn[2] * gap; gap = 0; } // 不能进到腿里
+      return gap;
+    };
     const applyGrab = () => {
       if (!gOff) return;
       for (const g of this.grabSet) {
         const k = g * 3;
         pos[k] = home[k] + gOff[0]; pos[k + 1] = home[k + 1] + gOff[1]; pos[k + 2] = home[k + 2] + gOff[2];
+        surf(g, FLAP_CLEAR);        // 抓取点不能被拖进腿里
         prev[k] = pos[k]; prev[k + 1] = pos[k + 1]; prev[k + 2] = pos[k + 2];
         lifted[g] = 1;
       }
@@ -378,13 +433,14 @@ export class StockingLeg {
             if (lifted[a]) { prev[k] = home[k]; prev[k + 1] = home[k + 1]; prev[k + 2] = home[k + 2]; }
             lifted[a] = 0;
           } else {
+            if (!lifted[a]) crow[a] = j;
             lifted[a] = 1;
             // 刚离开皮肤的一薄层仍被摩擦拖住，不能沿皮肤横向滑动；
             // 否则只受拉的薄膜会在抬起区的边缘滑过相邻顶点、叠成翻面的小三角（渲染出来是黑色块）
             if (d < SLIDE_FREE) {
               const f = (d - EPS_LAND) / (SLIDE_FREE - EPS_LAND), g = f * f * (3 - 2 * f);
               for (let c = 0; c < 3; c++) { const h = home[k + c] + hn[k + c] * d; pos[k + c] = h + (pos[k + c] - h) * g; }
-            }
+            } else surf(a, FLAP_CLEAR); // 抬起的部分搭在腿上时不能穿进去
           }
         }
       }
