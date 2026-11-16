@@ -128,32 +128,65 @@ function applyStocking() {
 }
 
 // ------------------------------------------------------------------ 鞋（乐福鞋）
-// 鞋在静止姿态（腿局部坐标，脚掌平放）里建一次：脚的网格外扩成鞋面，脚底压平成鞋底，再加鞋舌横带和鞋头的围盖；
-// 之后每帧只做蒙皮。鞋口由片元里的遮罩裁出。
-const SHOE_J0 = rowOfS(0.80), SHOE_ROWS = NV - SHOE_J0;
-const SOLE = 0.008;                 // 鞋底厚度
+// 鞋在静止姿态（腿局部坐标，脚掌平放）里建一次，之后每帧只做蒙皮：
+//   鞋面 = 脚的网格外扩 + 圆鞋头，鞋口由片元遮罩裁出；横带、开口、围盖缝线是片元里的高度场（凹凸）
+//   鞋底 = 鞋面俯视轮廓外放一圈沿条再向下挤出；后跟是一块方跟，穿鞋时脚踝相应跖屈
+const SHOE_J0 = rowOfS(0.80), SHOE_ROWS = NV - SHOE_J0, SHOE_N = NU * SHOE_ROWS;
+const HEEL_PITCH = 0.16;            // 穿鞋时的脚踝跖屈角（约 3cm 的跟）
+const SOLE_T = 0.007, WELT = 0.0032;
 const SHOE_MASK = `      if (vSUV.x < 0.) discard;   // 鞋口：aSUV.x 里存的是“在鞋帮上沿以下多少”
 `;
-const shoeMat = new THREE.MeshPhysicalMaterial({ color: 0xffffff, vertexColors: true, roughness: 0.36, clearcoat: 0.55, clearcoatRoughness: 0.28, side: THREE.DoubleSide });
+const shoeMat = new THREE.MeshPhysicalMaterial({ color: 0xffffff, vertexColors: true, roughness: 0.2, clearcoat: 1, clearcoatRoughness: 0.07, side: THREE.DoubleSide });
 shoeMat.onBeforeCompile = (sh) => {
   sh.vertexShader = sh.vertexShader
-    .replace('#include <common>', '#include <common>\nattribute vec3 aSUV; varying vec3 vSUV;')
-    .replace('#include <begin_vertex>', '#include <begin_vertex>\nvSUV = aSUV;');
+    .replace('#include <common>', '#include <common>\nattribute vec3 aSUV; attribute vec3 aShoe; varying vec3 vSUV; varying vec3 vShoe;')
+    .replace('#include <begin_vertex>', '#include <begin_vertex>\nvSUV = aSUV; vShoe = aShoe;');
   sh.fragmentShader = sh.fragmentShader
-    .replace('#include <common>', '#include <common>\nvarying vec3 vSUV;')
+    .replace('#include <common>', `#include <common>
+      varying vec3 vSUV; varying vec3 vShoe;
+      float lfSlit;
+      // 皮面上的起伏（米）。u：沿鞋长 0..1，v：横向 -1..1，d：俯视图里离鞋面轮廓的距离
+      float loaferHeight(float u, float v, float d) {
+        float strap = smoothstep(.515, .521, u) * (1. - smoothstep(.625, .631, u));          // 马鞍横带
+        lfSlit = strap * (1. - smoothstep(.007, .010, abs(u - .572))) * (1. - smoothstep(.34, .40, abs(v)));
+        float groove = (1. - smoothstep(0., .0035, abs(u - .528))) + (1. - smoothstep(0., .0035, abs(u - .618)));
+        float hgt = strap * .0014 - lfSlit * .0017 - groove * strap * .0003;
+        // 鞋头围盖：离轮廓一圈的凸棱，上面压着一针一针的缝线
+        float ridge = exp(-pow((d - .0125) / .0030, 2.)) * smoothstep(.630, .642, u);
+        float stitch = .88 + .12 * sin(atan(v, (u - .70) * 3.2) * 40.);
+        return hgt + ridge * .0011 * stitch;
+      }`)
     .replace('#include <color_fragment>', `#include <color_fragment>
-${SHOE_MASK}`);
+${SHOE_MASK}
+      float lfH = loaferHeight(vSUV.y, vSUV.z, vShoe.x);
+      float lfS = lfSlit;
+      diffuseColor.rgb *= 1. - .65 * lfS;
+      if (!gl_FrontFacing) diffuseColor.rgb = vec3(.36, .29, .23);   // 内里`)
+    .replace('#include <normal_fragment_maps>', `#include <normal_fragment_maps>
+      if (gl_FrontFacing) {
+        // 前向差分（而不是直接对高度求屏幕导数）：属性的导数在三角形内是常数，结果逐像素准确，不会出现 2x2 的马赛克
+        vec3 qa = vec3(vSUV.yz, vShoe.x), qx = dFdx(qa), qy = dFdy(qa);
+        vec2 dH = vec2(loaferHeight(qa.x + qx.x, qa.y + qx.y, qa.z + qx.z), loaferHeight(qa.x + qy.x, qa.y + qy.y, qa.z + qy.z)) - lfH;
+        vec3 sx = dFdx(-vViewPosition), sy = dFdy(-vViewPosition);
+        vec3 r1 = cross(sy, normal), r2 = cross(normal, sx);
+        float det = dot(sx, r1) * faceDirection;
+        normal = normalize(abs(det) * normal - sign(det) * (dH.x * r1 + dH.y * r2));
+      }`)
+    .replace('#include <clearcoat_normal_fragment_begin>', '#include <clearcoat_normal_fragment_begin>\nclearcoatNormal = normal;');
 };
-const soleMat = new THREE.MeshStandardMaterial({ color: 0x0b0807, roughness: 0.85 });
-const SHOE_REST = new Float32Array(NU * SHOE_ROWS * 3), SHOE_COL = new Float32Array(NU * SHOE_ROWS * 3);
-const SHOE_SUV = new Float32Array(NU * SHOE_ROWS * 3);   // (鞋口遮罩, sinθ, s)
-const SOLE_K = 72, SOLE_REST = new Float32Array((4 * SOLE_K + 1) * 3);
+const soleMat = new THREE.MeshStandardMaterial({ color: 0x050404, roughness: 0.82, envMapIntensity: 0.3 });
+const SHOE_REST = new Float32Array(SHOE_N * 3), SHOE_COL = new Float32Array(SHOE_N * 3);
+const SHOE_SUV = new Float32Array(SHOE_N * 3);   // (鞋口遮罩, u, v)
+const SHOE_AUX = new Float32Array(SHOE_N * 3);   // (d, h, 0)
+const SHOE_S = new Float32Array(SHOE_N);         // 蒙皮用的 s（靠近鞋底的部分随鞋底刚性运动）
+const SOLE_K = 96;
+let SOLE_REST, SOLE_S, SOLE_INDEX, SHOE_DROP = 0;
 (function buildLoafer() {
   const rn = new Float32Array(NU * NV * 3); gridNormals(REST, rn, NU, NV);
-  const p = SHOE_REST, n = NU * SHOE_ROWS, off = SHOE_J0 * NU * 3, TOE_J0 = rowOfS(0.93) - SHOE_J0;
+  const p = SHOE_REST, off = SHOE_J0 * NU * 3, TOE_J0 = rowOfS(0.93) - SHOE_J0, y0 = BODY.restMinY;
   const win = (a, b, c, d, x) => smooth(a, b, x) * (1 - smooth(c, d, x));
   for (let j = 0; j < SHOE_ROWS; j++) {
-    const s = S_ROW[SHOE_J0 + j], o = 0.0042 + 0.005 * smooth(0.92, 0.99, s);
+    const s = S_ROW[SHOE_J0 + j], o = 0.0036 + 0.004 * smooth(0.92, 0.99, s);
     for (let k = j * NU * 3; k < (j + 1) * NU * 3; k++) p[k] = REST[off + k] + rn[off + k] * o;
   }
   // 鞋头：把脚趾的起伏抹平成光滑的鞋面
@@ -179,49 +212,45 @@ const SOLE_K = 72, SOLE_REST = new Float32Array((4 * SOLE_K + 1) * 3);
     for (let i = 0; i < NU; i++) for (let c = 0; c < 3; c++) m[c] += p[o + i * 3 + c] / NU;
     for (let i = 0; i < NU; i++) for (let c = 0; c < 3; c++) p[o + i * 3 + c] = m[c] + (p[o + i * 3 + c] - m[c]) * 0.12;
   }
-  // 鞋口与配色。u：沿脚长的位置（0 = 脚跟后缘，1 = 鞋尖），h：离脚底的高度
   let z0 = 1e9, z1 = -1e9;
   for (let k = 2; k < p.length; k += 3) { if (p[k] < z0) z0 = p[k]; if (p[k] > z1) z1 = p[k]; }
+  const rowW = (j) => { let cx = 0, w = 0; for (let i = 0; i < NU; i++) cx += p[(j * NU + i) * 3] / NU; for (let i = 0; i < NU; i++) w = Math.max(w, Math.abs(p[(j * NU + i) * 3] - cx)); return [cx, w]; };
   { // 圆鞋头：脚尖是尖的，把鞋头每一行的宽度撑到一条圆润的轮廓上
-    const U0 = 0.74, rowW = (j) => { let cx = 0, w = 0; for (let i = 0; i < NU; i++) cx += p[(j * NU + i) * 3] / NU; for (let i = 0; i < NU; i++) w = Math.max(w, Math.abs(p[(j * NU + i) * 3] - cx)); return [cx, w]; };
-    const rowU = (j) => { let z = 0; for (let i = 0; i < NU; i++) z += p[(j * NU + i) * 3 + 2] / NU; return (z - z0) / (z1 - z0); };
+    const U0 = 0.66, rowU = (j) => { let z = 0; for (let i = 0; i < NU; i++) z += p[(j * NU + i) * 3 + 2] / NU; return (z - z0) / (z1 - z0); };
     let W = 0; for (let j = 0; j < SHOE_ROWS; j++) if (Math.abs(rowU(j) - U0) < 0.03) W = Math.max(W, rowW(j)[1]);
     for (let j = 0; j < SHOE_ROWS; j++) {
       const u = rowU(j); if (u <= U0) continue;
-      const [cx, w] = rowW(j), e = Math.min((u - U0) / (1.02 - U0), 1), target = W * Math.pow(Math.max(1 - Math.pow(e, 2.0), 0), 1 / 2.0);
+      const [cx, w] = rowW(j), e = Math.min((u - U0) / (1.02 - U0), 1), target = W * Math.sqrt(Math.max(1 - e * e, 0));
       const f = Math.min(Math.max(target / Math.max(w, 1e-4), 1), 3);
       for (let i = 0; i < NU; i++) { const k = (j * NU + i) * 3; p[k] = cx + (p[k] - cx) * f; }
     }
   }
-  const upper = new THREE.Color(0x4a2516), strapC = new THREE.Color(0x3a1b10), col = new THREE.Color();
+  // 鞋口。u：沿脚长（0 = 脚跟后缘，1 = 鞋尖），v：横向，h：离脚底的高度
+  const base = new THREE.Color(0x2c1215);
   for (let j = 0; j < SHOE_ROWS; j++) {
-    const sr = S_ROW[SHOE_J0 + j];
+    const sr = S_ROW[SHOE_J0 + j], [cx, w] = rowW(j);
     for (let i = 0; i < NU; i++) {
-      const k = (j * NU + i) * 3, sn = SUV[off + k + 1];
-      const u = (p[k + 2] - z0) / (z1 - z0), h = p[k + 1] - BODY.restMinY;
-      // 横带（penny strap）与鞋头围盖：沿法线鼓起一点
-      const strap = win(0.60, 0.615, 0.665, 0.68, u) * smooth(0.012, 0.03, h);
-      const apron = smooth(0.74, 0.76, u) * (1 - smooth(0.93, 0.97, u)) * smooth(0.40, 0.56, sn);
-      const bump = strap * 0.0024 + apron * 0.0013;
-      p[k] += rn[off + k] * bump; p[k + 1] += rn[off + k + 1] * bump; p[k + 2] += rn[off + k + 2] * bump;
-      // 鞋帮上沿：后跟高、两侧低，向前逐渐升到脚背；脚背中部（u≈0.5）以前全部包住
-      const top = 0.058 + (0.040 - 0.058) * smooth(0.06, 0.30, u) + 0.045 * smooth(0.38, 0.52, u);
-      SHOE_SUV[k] = Math.max(top - h, (u - 0.50) * 0.4);
-      SHOE_SUV[k + 1] = sn; SHOE_SUV[k + 2] = sr;
-      col.copy(upper).lerp(strapC, strap);
-      SHOE_COL[k] = col.r; SHOE_COL[k + 1] = col.g; SHOE_COL[k + 2] = col.b;
+      const a = j * NU + i, k = a * 3;
+      const u = (p[k + 2] - z0) / (z1 - z0), h = p[k + 1] - y0, v = (p[k] - cx) / Math.max(w, 1e-4);
+      // 鞋帮上沿：后跟高、两侧低，向前升到脚背；再往前整圈包住，中间是向后伸出的鞋舌
+      const top = 0.054 + (0.036 - 0.054) * smooth(0.04, 0.30, u) + 0.05 * smooth(0.36, 0.50, u);
+      const uFront = 0.50 - 0.06 * Math.max(0, 1 - v * v * v * v * 2.2);
+      SHOE_SUV[k] = Math.max(top - h, Math.min((u - uFront) * 0.4, 0.088 - h));
+      SHOE_SUV[k + 1] = u; SHOE_SUV[k + 2] = v;
+      SHOE_AUX[k + 1] = h;
+      SHOE_S[a] = sr + (Math.max(sr, 0.9) - sr) * (1 - smooth(0.012, 0.045, h));
+      SHOE_COL[k] = base.r; SHOE_COL[k + 1] = base.g; SHOE_COL[k + 2] = base.b;
     }
   }
-  // ---- 鞋底：鞋面俯视轮廓的凸包向外放出一圈沿条，再向下挤出；足弓下方收薄，分出鞋跟和前掌 ----
+  // ---- 鞋面的俯视轮廓：凸包 -> 按弧长均匀重采样 ----
   const pts = [];
-  for (let k = 0; k < p.length; k += 3) if (p[k + 1] - BODY.restMinY < 0.03 && SHOE_SUV[k] > 0) pts.push([p[k], p[k + 2]]);
+  for (let k = 0; k < p.length; k += 3) if (p[k + 1] - y0 < 0.03 && SHOE_SUV[k] > 0) pts.push([p[k], p[k + 2]]);
   pts.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
   const cr = (o, a, b) => (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]), hull = [];
   for (const q of pts) { while (hull.length >= 2 && cr(hull[hull.length - 2], hull[hull.length - 1], q) <= 0) hull.pop(); hull.push(q); }
   const lo = hull.length + 1;
   for (let i = pts.length - 2; i >= 0; i--) { const q = pts[i]; while (hull.length >= lo && cr(hull[hull.length - 2], hull[hull.length - 1], q) <= 0) hull.pop(); hull.push(q); }
   hull.pop();
-  // 按弧长均匀重采样，并沿外法线放出沿条
   const K = SOLE_K, len = [0];
   for (let i = 0; i < hull.length; i++) { const a = hull[i], b = hull[(i + 1) % hull.length]; len.push(len[i] + Math.hypot(b[0] - a[0], b[1] - a[1])); }
   const loop = [];
@@ -231,30 +260,82 @@ const SOLE_K = 72, SOLE_REST = new Float32Array((4 * SOLE_K + 1) * 3);
     loop.push([a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f]);
   }
   for (let pass = 0; pass < 3; pass++) { const c = loop.map((q) => q.slice()); for (let m = 0; m < K; m++) for (let e = 0; e < 2; e++) loop[m][e] = (c[m][e] * 2 + c[(m + 1) % K][e] + c[(m + K - 1) % K][e]) / 4; }
+  // 每个鞋面顶点在俯视图里离轮廓的距离（围盖缝线用）
+  for (let k = 0; k < p.length; k += 3) {
+    let best = 1e9;
+    for (let m = 0; m < K; m++) {
+      const a = loop[m], b = loop[(m + 1) % K], ex = b[0] - a[0], ez = b[1] - a[1];
+      const t = Math.min(1, Math.max(0, ((p[k] - a[0]) * ex + (p[k + 2] - a[1]) * ez) / (ex * ex + ez * ez)));
+      best = Math.min(best, Math.hypot(p[k] - a[0] - ex * t, p[k + 2] - a[1] - ez * t));
+    }
+    SHOE_AUX[k] = best;
+  }
+  // ---- 鞋底 ----
   let cx = 0, cz = 0; for (const q of loop) { cx += q[0] / K; cz += q[1] / K; }
-  const yT = BODY.restMinY + 0.004, yB = BODY.restMinY - SOLE, WELT = 0.0018;
   // 凸包（x, z）逆时针时，外法线是 (dz, -dx)
   const out = loop.map((q, m) => {
     const a = loop[(m + K - 1) % K], b = loop[(m + 1) % K]; const nx = b[1] - a[1], nz = -(b[0] - a[0]), l = Math.hypot(nx, nz) || 1;
     return [q[0] + nx / l * WELT, q[1] + nz / l * WELT];
   });
-  // 顶点：0..K-1 沿条上缘，K..2K-1 侧壁下缘，2K..3K-1 底面外圈，3K 底面中心，3K+1.. 沿条顶面内圈
-  const sp = SOLE_REST;
-  out.forEach((q, m) => {
-    const u = (q[1] - z0) / (z1 - z0), yb = yB + 0.0045 * win(0.27, 0.30, 0.50, 0.54, u);
-    sp.set([q[0], yT, q[1]], m * 3); sp.set([q[0], yb, q[1]], (K + m) * 3); sp.set([q[0], yb, q[1]], (2 * K + m) * 3);
-    sp.set([loop[m][0] + (cx - loop[m][0]) * 0.25, yT, loop[m][1] + (cz - loop[m][1]) * 0.25], (3 * K + 1 + m) * 3);
+  // 鞋底顶点的 s：按 z 从脚的各行查出来；脚掌以后的部分整体随脚踝刚性运动（s = 0.9）
+  const jr = rowOfS(0.9), zRow = [];
+  for (let j = jr; j < NV; j++) { let z = 0; for (let i = 0; i < NU; i++) z += REST[(j * NU + i) * 3 + 2] / NU; zRow.push(z); }
+  const sOfZ = (z) => {
+    if (z <= zRow[0]) return 0.9;
+    for (let n = 1; n < zRow.length; n++) if (z <= zRow[n]) return S_ROW[jr + n - 1] + (S_ROW[jr + n] - S_ROW[jr + n - 1]) * (z - zRow[n - 1]) / Math.max(zRow[n] - zRow[n - 1], 1e-6);
+    return S_ROW[NV - 1];
+  };
+  const yT = y0 + 0.003, yB = y0 - SOLE_T;
+  const V = [], Sv = [], idx = [], add = (x, y, z, s) => { V.push(x, y, z); Sv.push(s); return Sv.length - 1; };
+  // 0..K-1 沿条上缘，K..2K-1 侧壁下缘，2K..3K-1 底面外圈，3K 底面中心，3K+1.. 沿条顶面内圈
+  for (const q of out) add(q[0], yT, q[1], sOfZ(q[1]));
+  for (const q of out) add(q[0], yB, q[1], sOfZ(q[1]));
+  for (const q of out) add(q[0], yB, q[1], sOfZ(q[1]));
+  add(cx, yB, cz, sOfZ(cz));
+  for (const q of loop) add(q[0] + (cx - q[0]) * 0.25, yT, q[1] + (cz - q[1]) * 0.25, sOfZ(q[1]));
+  for (let m = 0; m < K; m++) {
+    const m1 = (m + 1) % K;
+    idx.push(m, m1, K + m, m1, K + m1, K + m);                                   // 侧壁
+    idx.push(2 * K + m, 2 * K + m1, 3 * K);                                      // 底面
+    idx.push(3 * K + 1 + m, m1, m, 3 * K + 1 + m, 3 * K + 1 + m1, m1);           // 沿条顶面
+  }
+  // ---- 方跟：鞋底后段向下的一块，底面在站姿（脚踝跖屈 HEEL_PITCH）时刚好水平着地 ----
+  const leg = legs[0], t = [0, 0, 0];
+  leg.foot = HEEL_PITCH;
+  let gY = 1e9, fY = 1e9;
+  for (let m = K; m < 2 * K; m++) gY = Math.min(gY, leg.skin(V[m * 3], V[m * 3 + 1], V[m * 3 + 2], Sv[m], t)[1]);
+  for (let j = SHOE_J0; j < NV; j++) for (let i = 0; i < NU; i++) { const k = (j * NU + i) * 3; fY = Math.min(fY, leg.skin(REST[k], REST[k + 1], REST[k + 2], S_ROW[j], t)[1]); }
+  SHOE_DROP = fY - gY;
+  const rear = []; let start = 0;
+  const isRear = (m) => (out[m][1] - z0) / (z1 - z0) < 0.27;
+  for (let m = 0; m < K; m++) if (isRear(m) && !isRear((m + K - 1) % K)) start = m;
+  for (let n = 0; n < K && isRear((start + n) % K); n++) rear.push((start + n) % K);
+  const M = rear.length, A = ANKLE_P, ca = Math.cos(HEEL_PITCH), sa = Math.sin(HEEL_PITCH), h0 = Sv.length;
+  for (const m of rear) add(out[m][0], yB, out[m][1], 0.9);
+  const bot = rear.map((m) => {
+    leg.skin(out[m][0], yB, out[m][1], 0.9, t);
+    const py = gY - A[1], pz = t[2] - A[2];       // 竖直投到地面，再反算回静止姿态
+    return [out[m][0], py * ca + pz * sa + A[1], -py * sa + pz * ca + A[2]];
   });
-  sp.set([cx, yB, cz], 3 * K * 3);
+  for (const q of bot) add(q[0], q[1], q[2], 0.9);
+  for (const q of bot) add(q[0], q[1], q[2], 0.9);
+  const hc = add(bot.reduce((a, q) => a + q[0] / M, 0), bot.reduce((a, q) => a + q[1] / M, 0), bot.reduce((a, q) => a + q[2] / M, 0), 0.9);
+  for (let n = 0; n < M; n++) {
+    const n1 = (n + 1) % M;
+    idx.push(h0 + n, h0 + n1, h0 + M + n, h0 + n1, h0 + M + n1, h0 + M + n);
+    idx.push(h0 + 2 * M + n, h0 + 2 * M + n1, hc);
+  }
+  leg.foot = 0;
+  SOLE_REST = new Float32Array(V); SOLE_S = new Float32Array(Sv); SOLE_INDEX = idx;
 })();
 const shoes = legs.map((leg) => {
-  const n = NU * SHOE_ROWS;
-  const pos = new Float32Array(n * 3), nrm = new Float32Array(n * 3);
+  const pos = new Float32Array(SHOE_N * 3), nrm = new Float32Array(SHOE_N * 3);
   const g = new THREE.BufferGeometry();
   g.setAttribute('position', new THREE.BufferAttribute(pos, 3).setUsage(THREE.DynamicDrawUsage));
   g.setAttribute('normal', new THREE.BufferAttribute(nrm, 3).setUsage(THREE.DynamicDrawUsage));
   g.setAttribute('color', new THREE.BufferAttribute(SHOE_COL, 3));
   g.setAttribute('aSUV', new THREE.BufferAttribute(SHOE_SUV, 3));
+  g.setAttribute('aShoe', new THREE.BufferAttribute(SHOE_AUX, 3));
   const idx = [];
   for (let j = 0; j < SHOE_ROWS - 1; j++) for (let i = 0; i < NU; i++) {
     const a = j * NU + i, b = j * NU + (i + 1) % NU, c = a + NU, d = b + NU;
@@ -263,15 +344,9 @@ const shoes = legs.map((leg) => {
   g.setIndex(idx);
   g.boundingSphere = new THREE.Sphere(new THREE.Vector3(0, 0.2, 0), 5);
   const mesh = new THREE.Mesh(g, shoeMat); mesh.frustumCulled = false; mesh.castShadow = true; mesh.receiveShadow = true;
-  // 鞋底
-  const K = SOLE_K, sg = new THREE.BufferGeometry(), si = [];
-  const tri = (a, b, c) => { if (leg.side > 0) si.push(a, b, c); else si.push(a, c, b); };
-  for (let m = 0; m < K; m++) {
-    const m1 = (m + 1) % K;
-    tri(m, m1, K + m); tri(m1, K + m1, K + m);                 // 侧壁
-    tri(2 * K + m, 2 * K + m1, 3 * K);                         // 底面
-    tri(3 * K + 1 + m, m1, m); tri(3 * K + 1 + m, 3 * K + 1 + m1, m1); // 沿条顶面
-  }
+  // 鞋底 + 方跟
+  const sg = new THREE.BufferGeometry(), si = SOLE_INDEX.slice();
+  if (leg.side < 0) for (let k = 0; k < si.length; k += 3) { const x = si[k + 1]; si[k + 1] = si[k + 2]; si[k + 2] = x; }
   const spos = new Float32Array(SOLE_REST.length);
   sg.setAttribute('position', new THREE.BufferAttribute(spos, 3).setUsage(THREE.DynamicDrawUsage));
   sg.setIndex(si);
@@ -318,20 +393,17 @@ function updateShoes() {
     sh.mesh.visible = sh.sole.visible = P.shoes;
     if (!P.shoes) continue;
     const p = sh.pos, leg = sh.leg;
-    for (let j = 0; j < SHOE_ROWS; j++) {
-      const sr = S_ROW[SHOE_J0 + j];
-      for (let k = j * NU * 3; k < (j + 1) * NU * 3; k += 3) {
-        leg.skin(SHOE_REST[k], SHOE_REST[k + 1], SHOE_REST[k + 2], sr, t);
-        p[k] = t[0] * c + t[2] * s + root.x; p[k + 1] = t[1] + root.y; p[k + 2] = -t[0] * s + t[2] * c + root.z;
-      }
+    for (let a = 0, k = 0; a < SHOE_N; a++, k += 3) {
+      leg.skin(SHOE_REST[k], SHOE_REST[k + 1], SHOE_REST[k + 2], SHOE_S[a], t);
+      p[k] = t[0] * c + t[2] * s + root.x; p[k + 1] = t[1] + root.y; p[k + 2] = -t[0] * s + t[2] * c + root.z;
     }
     gridNormals(p, sh.nrm, NU, SHOE_ROWS);
     if (leg.side < 0) for (let k = 0; k < sh.nrm.length; k++) sh.nrm[k] = -sh.nrm[k];
     sh.mesh.geometry.attributes.position.needsUpdate = true;
     sh.mesh.geometry.attributes.normal.needsUpdate = true;
     const sp = sh.spos;
-    for (let k = 0; k < sp.length; k += 3) { // 鞋底随脚刚性运动
-      leg.skin(SOLE_REST[k], SOLE_REST[k + 1], SOLE_REST[k + 2], 0.95, t);
+    for (let a = 0, k = 0; k < sp.length; a++, k += 3) {
+      leg.skin(SOLE_REST[k], SOLE_REST[k + 1], SOLE_REST[k + 2], SOLE_S[a], t);
       sp[k] = t[0] * c + t[2] * s + root.x; sp[k + 1] = t[1] + root.y; sp[k + 2] = -t[0] * s + t[2] * c + root.z;
     }
     sh.sole.geometry.attributes.position.needsUpdate = true;
@@ -386,11 +458,12 @@ function updatePose(dt) {
     else act.jump = null;
   }
   kR = Math.max(kR, 0.8 * crouch); kL = Math.max(kL, 0.8 * crouch);
+  legs[0].foot = legs[1].foot = P.shoes ? HEEL_PITCH : 0;
   legs[0].knee = kR; legs[0].hip = kR * 0.5;
   legs[1].knee = kL; legs[1].hip = kL * 0.5;
   for (const leg of legs) leg.updateLocal();
   root.x = shiftX; root.yaw = yaw;
-  root.y = -Math.min(legs[0].minY, legs[1].minY) + 0.0045 + (P.shoes ? SOLE : 0) + air;
+  root.y = -Math.min(legs[0].minY, legs[1].minY) + (P.shoes ? SHOE_DROP + 0.0005 : 0.0045) + air;
   for (const leg of legs) leg.applyRoot(root);
   bodyGroup.position.set(root.x, root.y, root.z);
   bodyGroup.rotation.y = root.yaw;
@@ -485,7 +558,7 @@ const toon = {
   band: makeToon({ color: 0x5b4336, shade: [0.62, 0.58, 0.70] }),
   shorts: makeToon({ color: 0x1b1b22, shade: [0.6, 0.6, 0.75] }),
   shoe: makeToon({ vertexColors: true, side: THREE.DoubleSide, shade: [0.62, 0.52, 0.62], rim: [0.20, 0.14, 0.10], mask: SHOE_MASK }),
-  sole: makeToon({ color: 0x1c1512, shade: [0.6, 0.55, 0.65] }),
+  sole: makeToon({ color: 0x18130f, shade: [0.6, 0.55, 0.65] }),
   stock: makeToonStocking(stockMat.userData.uniforms),
 };
 toon.skin.polygonOffset = true; toon.skin.polygonOffsetFactor = 1; toon.skin.polygonOffsetUnits = 1;
