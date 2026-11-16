@@ -9,6 +9,7 @@ const N = NU * NV;
 const OFFSET = 0.0009;       // 贴肤时离皮肤的距离
 const EPS_LIFT = 0.00030;    // 离开皮肤的阈值
 const EPS_LAND = 0.00006;    // 重新贴回的阈值
+const SLIDE_FREE = 0.004;    // 离皮肤超过这个距离后才能自由横向滑动
 const WINDOW = 75;           // 仅模拟抓取点上下若干行
 const MAX_PULL = 0.24;       // 拉得太远会脱手弹回
 
@@ -306,7 +307,12 @@ export class StockingLeg {
       const g3 = this.grabIdx * 3;
       const dx = this.target.x - home[g3], dy = this.target.y - home[g3 + 1], dz = this.target.z - home[g3 + 2];
       if (Math.sqrt((dx) ** 2 + (dy) ** 2 + (dz) ** 2) > MAX_PULL) { this.release(); this.onSnap && this.onSnap(); }
-      else { gOff = [dx, dy, dz]; for (const g of this.grabSet) fixed[g] = 2; }
+      else {
+        // 抓取点不能被按进腿里：把位移限制在抓取处皮肤切平面的外侧
+        const nd = dx * hn[g3] + dy * hn[g3 + 1] + dz * hn[g3 + 2], e = Math.max(0, 0.0015 - nd);
+        gOff = [dx + hn[g3] * e, dy + hn[g3 + 1] * e, dz + hn[g3 + 2] * e];
+        for (const g of this.grabSet) fixed[g] = 2;
+      }
     }
     const applyGrab = () => {
       if (!gOff) return;
@@ -371,7 +377,15 @@ export class StockingLeg {
             pos[k] = home[k]; pos[k + 1] = home[k + 1]; pos[k + 2] = home[k + 2];
             if (lifted[a]) { prev[k] = home[k]; prev[k + 1] = home[k + 1]; prev[k + 2] = home[k + 2]; }
             lifted[a] = 0;
-          } else lifted[a] = 1;
+          } else {
+            lifted[a] = 1;
+            // 刚离开皮肤的一薄层仍被摩擦拖住，不能沿皮肤横向滑动；
+            // 否则只受拉的薄膜会在抬起区的边缘滑过相邻顶点、叠成翻面的小三角（渲染出来是黑色块）
+            if (d < SLIDE_FREE) {
+              const f = (d - EPS_LAND) / (SLIDE_FREE - EPS_LAND), g = f * f * (3 - 2 * f);
+              for (let c = 0; c < 3; c++) { const h = home[k + c] + hn[k + c] * d; pos[k + c] = h + (pos[k + c] - h) * g; }
+            }
+          }
         }
       }
     }
